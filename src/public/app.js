@@ -414,6 +414,98 @@ class ClaudeCodeWebInterface {
                 this.send({ type: 'resize', cols, rows });
             }
         });
+
+        // Paste / drop images into the terminal (single-view). We can't hand a
+        // real clipboard image to the shell, so upload it and inject the saved
+        // file path into the prompt for Claude Code to read.
+        this.setupImagePaste();
+    }
+
+    // Wire paste (Ctrl/Cmd+V) and drag-drop of image files onto the terminal.
+    // Works in plain-HTTP contexts because it reads the DOM paste/drop events
+    // (clipboardData / dataTransfer), not navigator.clipboard.
+    setupImagePaste() {
+        const termEl = document.getElementById('terminal');
+        const containerEl = document.getElementById('terminalContainer');
+        if (!termEl) return;
+
+        termEl.addEventListener('paste', (e) => {
+            const items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+            const images = [];
+            for (const item of items) {
+                if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    const file = item.getAsFile();
+                    if (file) images.push(file);
+                }
+            }
+            if (images.length === 0) return; // plain text paste — leave to xterm
+            e.preventDefault();
+            images.forEach((f) => this.uploadAndInsertImage(f));
+        });
+
+        if (containerEl) {
+            // Allow dropping files here (default would navigate the page). Only
+            // take over the gesture when the drag actually carries files, so the
+            // tab→split drag handler in splits.js is left untouched.
+            containerEl.addEventListener('dragover', (e) => {
+                if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                    e.preventDefault();
+                }
+            });
+            containerEl.addEventListener('drop', (e) => {
+                const files = e.dataTransfer && e.dataTransfer.files;
+                const images = files ? Array.from(files).filter((f) => f.type.startsWith('image/')) : [];
+                if (images.length === 0) return; // not an image drop — let other handlers run
+                e.preventDefault();
+                images.forEach((f) => this.uploadAndInsertImage(f));
+            });
+        }
+    }
+
+    // Upload one image file to the server and, on success, inject its saved
+    // path into the terminal input so Claude Code picks it up as an image.
+    async uploadAndInsertImage(file) {
+        if (!this.currentClaudeSessionId) {
+            this.showToast('请先启动 Claude 再贴图', true);
+            return;
+        }
+        try {
+            const res = await this.authFetch(
+                `/api/upload-image?sessionId=${encodeURIComponent(this.currentClaudeSessionId)}`,
+                { method: 'POST', body: file, headers: { 'Content-Type': file.type } }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.showToast(data.error || '图片上传失败', true);
+                return;
+            }
+            // Inject the absolute path (+trailing space) as if typed. No newline:
+            // the user adds their prompt and sends it themselves.
+            this.send({ type: 'input', data: data.path + ' ' });
+            this.showToast('已插入图片');
+        } catch (err) {
+            this.showToast('图片上传失败', true);
+        }
+    }
+
+    // Minimal self-removing toast (bottom-center). Avoids hijacking the terminal
+    // with the full-screen error overlay for transient paste feedback.
+    showToast(message, isError = false) {
+        const el = document.createElement('div');
+        el.textContent = message;
+        el.style.cssText = [
+            'position:fixed', 'left:50%', 'bottom:60px', 'transform:translateX(-50%)',
+            'z-index:6000', 'padding:8px 14px', 'border-radius:6px', 'font-size:13px',
+            'color:#fff', 'pointer-events:none', 'opacity:0', 'transition:opacity 0.2s',
+            `background:${isError ? 'rgba(248,81,73,0.95)' : 'rgba(40,167,69,0.95)'}`
+        ].join(';');
+        document.body.appendChild(el);
+        requestAnimationFrame(() => { el.style.opacity = '1'; });
+        setTimeout(() => {
+            el.style.opacity = '0';
+            setTimeout(() => el.remove(), 250);
+        }, 2200);
     }
 
     // Translate one-finger vertical swipes into terminal scrolling. Needed on

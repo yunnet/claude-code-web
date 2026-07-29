@@ -3,6 +3,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -196,6 +197,54 @@ class ClaudeCodeWebServer {
       });
     }
 
+    // Image upload for pasting/dropping images into the terminal. Saves the
+    // image into <session workingDir>/.ccw-uploads and returns its absolute
+    // path; the client then injects that path into the PTY input so Claude
+    // Code reads it as an image. Route-scoped express.raw keeps the global
+    // express.json() untouched. Registered after the auth middleware so it is
+    // protected by the same token check.
+    const IMAGE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+    this.app.post('/api/upload-image',
+      express.raw({ type: Object.keys(IMAGE_EXT), limit: '15mb' }),
+      (req, res) => {
+        try {
+          const sessionId = req.query.sessionId;
+          const session = sessionId && this.claudeSessions.get(sessionId);
+          if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+          }
+          // Only Claude sessions support image paste for now.
+          if (session.agent !== 'claude') {
+            return res.status(400).json({ error: '仅支持 Claude 会话贴图' });
+          }
+          const ext = IMAGE_EXT[(req.headers['content-type'] || '').split(';')[0].trim()];
+          if (!ext) {
+            return res.status(415).json({ error: 'Unsupported image type' });
+          }
+          if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+            return res.status(400).json({ error: 'Empty image body' });
+          }
+          const workingDir = session.workingDir;
+          if (!workingDir || !fs.existsSync(workingDir)) {
+            return res.status(400).json({ error: 'Session has no valid working directory' });
+          }
+          const dir = path.join(workingDir, '.ccw-uploads');
+          const firstTime = !fs.existsSync(dir);
+          fs.mkdirSync(dir, { recursive: true });
+          // Make the folder self-ignoring so pasted images never dirty the repo.
+          if (firstTime) {
+            try { fs.writeFileSync(path.join(dir, '.gitignore'), '*\n'); } catch (_) { /* best-effort */ }
+          }
+          const filename = `img-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+          const filePath = path.join(dir, filename);
+          fs.writeFileSync(filePath, req.body);
+          res.json({ path: filePath });
+        } catch (error) {
+          if (this.dev) console.error('Image upload failed:', error.message);
+          res.status(500).json({ error: 'Image upload failed', message: error.message });
+        }
+      });
+
     // Commands API removed
 
     this.app.get('/api/health', (req, res) => {
@@ -328,11 +377,19 @@ class ClaudeCodeWebServer {
         }
       });
       
+      // Best-effort: remove pasted-image scratch dir for this session.
+      try {
+        if (session.workingDir) {
+          const uploadsDir = path.join(session.workingDir, '.ccw-uploads');
+          if (fs.existsSync(uploadsDir)) fs.rmSync(uploadsDir, { recursive: true, force: true });
+        }
+      } catch (_) { /* best-effort cleanup */ }
+
       this.claudeSessions.delete(sessionId);
-      
+
       // Save sessions after deletion
       this.saveSessionsToDisk();
-      
+
       res.json({ success: true, message: 'Session deleted' });
     });
 
