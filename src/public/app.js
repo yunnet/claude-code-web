@@ -745,6 +745,23 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    // Current terminal grid size, sent with start_* so the PTY spawns at the
+    // real width instead of the 80x24 default (which leaves a blank strip on
+    // the right of wide screens).
+    termDims() {
+        return { cols: this.terminal?.cols, rows: this.terminal?.rows };
+    }
+
+    // Force the server PTY to match this client's terminal size. Used when
+    // joining an already-running session (page reload / restored session): the
+    // PTY may have been spawned at a different width and, since our terminal
+    // size isn't changing, no onResize event would fire to correct it.
+    syncPtySize() {
+        this.fitTerminal();
+        const { cols, rows } = this.termDims();
+        if (cols && rows) this.send({ type: 'resize', cols, rows });
+    }
+
     handleMessage(message) {
         switch (message.type) {
             case 'connected':
@@ -806,6 +823,10 @@ class ClaudeCodeWebInterface {
                 if (message.active) {
                     console.log('[session_joined] Session is active, hiding overlay');
                     this.hideOverlay();
+                    // Re-sync the PTY to our width (the session may have been
+                    // spawned at a different size). A tick lets the terminal
+                    // finish laying out before we measure it.
+                    setTimeout(() => this.syncPtySize(), 50);
                     // Don't auto-focus to avoid focus tracking sequences
                     // User can click to focus when ready
                 } else if (this.pendingStart) {
@@ -989,10 +1010,10 @@ class ClaudeCodeWebInterface {
             });
             // Wait for session creation, then start Claude
             setTimeout(() => {
-                this.send({ type: 'start_claude', options });
+                this.send({ type: 'start_claude', options, ...this.termDims() });
             }, 500);
         } else {
-            this.send({ type: 'start_claude', options });
+            this.send({ type: 'start_claude', options, ...this.termDims() });
         }
         
         this.showOverlay('loadingSpinner');
@@ -1014,10 +1035,10 @@ class ClaudeCodeWebInterface {
             });
             // Wait for session creation, then start Codex
             setTimeout(() => {
-                this.send({ type: 'start_codex', options });
+                this.send({ type: 'start_codex', options, ...this.termDims() });
             }, 500);
         } else {
-            this.send({ type: 'start_codex', options });
+            this.send({ type: 'start_codex', options, ...this.termDims() });
         }
 
         this.showOverlay('loadingSpinner');
@@ -1039,10 +1060,10 @@ class ClaudeCodeWebInterface {
             });
             // Wait for session creation, then start Agent
             setTimeout(() => {
-                this.send({ type: 'start_agent', options });
+                this.send({ type: 'start_agent', options, ...this.termDims() });
             }, 500);
         } else {
-            this.send({ type: 'start_agent', options });
+            this.send({ type: 'start_agent', options, ...this.termDims() });
         }
         
         this.showOverlay('loadingSpinner');

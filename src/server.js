@@ -674,13 +674,13 @@ class ClaudeCodeWebServer {
         break;
 
       case 'start_claude':
-        await this.startClaude(wsId, data.options || {});
+        await this.startClaude(wsId, data.options || {}, data.cols, data.rows);
         break;
       case 'start_codex':
-        await this.startCodex(wsId, data.options || {});
+        await this.startCodex(wsId, data.options || {}, data.cols, data.rows);
         break;
       case 'start_agent':
-        await this.startAgent(wsId, data.options || {});
+        await this.startAgent(wsId, data.options || {}, data.cols, data.rows);
         break;
       
       case 'input':
@@ -883,7 +883,7 @@ class ClaudeCodeWebServer {
     });
   }
 
-  async startClaude(wsId, options) {
+  async startClaude(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo || !wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -910,6 +910,10 @@ class ClaudeCodeWebServer {
     try {
       await this.claudeBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        // Spawn the PTY at the client's real terminal size so the program uses
+        // the full width. Without this it defaults to 80 cols and wide screens
+        // show a blank strip on the right. (Falls back to the bridge default.)
+        cols, rows,
         onOutput: (data) => {
           // Get the current session again to ensure we have the right reference
           const currentSession = this.claudeSessions.get(sessionId);
@@ -989,7 +993,7 @@ class ClaudeCodeWebServer {
     });
   }
 
-  async startCodex(wsId, options) {
+  async startCodex(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo || !wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -1014,6 +1018,7 @@ class ClaudeCodeWebServer {
     try {
       await this.codexBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        cols, rows,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
@@ -1075,7 +1080,7 @@ class ClaudeCodeWebServer {
     this.broadcastToSession(sessionId, { type: 'codex_stopped' });
   }
 
-  async startAgent(wsId, options) {
+  async startAgent(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo || !wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -1100,6 +1105,7 @@ class ClaudeCodeWebServer {
     try {
       await this.agentBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        cols, rows,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
