@@ -337,10 +337,11 @@ class ClaudeCodeWebServer {
     });
 
     this.app.get('/api/config', (req, res) => {
-      res.json({ 
+      res.json({
         folderMode: this.folderMode,
         selectedWorkingDir: this.selectedWorkingDir,
         baseFolder: this.baseFolder,
+        homeDir: require('os').homedir(),
         aliases: this.aliases
       });
     });
@@ -413,12 +414,26 @@ class ClaudeCodeWebServer {
       try {
         const items = fs.readdirSync(currentPath, { withFileTypes: true });
         const folders = items
-          .filter(item => item.isDirectory())
+          .filter(item => {
+            // Regular directory.
+            if (item.isDirectory()) return true;
+            // Symlink pointing at a directory: readdir reports the link type
+            // (not the target), so isDirectory() is false — resolve the target.
+            if (item.isSymbolicLink()) {
+              try {
+                return fs.statSync(path.join(currentPath, item.name)).isDirectory();
+              } catch (_) {
+                return false; // broken/dangling symlink
+              }
+            }
+            return false;
+          })
           .filter(item => !item.name.startsWith('.') || req.query.showHidden === 'true')
           .map(item => ({
             name: item.name,
             path: path.join(currentPath, item.name),
-            isDirectory: true
+            isDirectory: true,
+            isSymlink: item.isSymbolicLink()
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
         

@@ -103,11 +103,19 @@ class ClaudeCodeWebInterface {
             const firstTabId = this.sessionTabManager.tabs.keys().next().value;
             console.log('[Init] Switching to tab:', firstTabId);
             await this.sessionTabManager.switchToTab(firstTabId);
-            
-            // Hide overlay completely since we have sessions
-            console.log('[Init] About to hide overlay');
-            this.hideOverlay();
-            console.log('[Init] Overlay should be hidden now');
+
+            // Hide the loading overlay now that we've joined a session — but keep
+            // the "Start Claude" restart prompt visible when the joined session's
+            // Claude process has stopped (session_joined shows startPrompt in that
+            // case; without this guard we'd hide it and leave no button to click).
+            const startPromptVisible = document.getElementById('startPrompt')?.style.display === 'block';
+            if (!startPromptVisible) {
+                console.log('[Init] About to hide overlay');
+                this.hideOverlay();
+                console.log('[Init] Overlay should be hidden now');
+            } else {
+                console.log('[Init] Stopped session — keeping restart prompt visible');
+            }
         } else {
             console.log('[Init] No sessions found, showing folder browser');
             // No sessions - hide loading overlay and show folder picker to create first session
@@ -137,6 +145,15 @@ class ClaudeCodeWebInterface {
                 }
                 if (typeof cfg.folderMode === 'boolean') {
                     this.folderMode = cfg.folderMode;
+                }
+                // The directory ccw was launched from. We treat it as "no project
+                // chosen" so Start Claude prompts for a real project folder instead
+                // of silently running in the launch/home directory.
+                if (cfg.baseFolder) {
+                    this.baseFolder = cfg.baseFolder;
+                }
+                if (cfg.homeDir) {
+                    this.homeDir = cfg.homeDir;
                 }
             }
         } catch (_) { /* best-effort */ }
@@ -308,7 +325,10 @@ class ClaudeCodeWebInterface {
                 foreground: '#f0f6fc',
                 cursor: '#58a6ff',
                 cursorAccent: '#0d1117',
-                selection: 'rgba(88, 166, 255, 0.3)',
+                // xterm 5.x renamed `selection` -> `selectionBackground`; the old
+                // key is ignored, which left selections invisible (looked un-copyable).
+                selectionBackground: 'rgba(88, 166, 255, 0.35)',
+                selectionForeground: '#0d1117',
                 black: '#484f58',
                 red: '#ff7b72',
                 green: '#7ee787',
@@ -345,6 +365,40 @@ class ClaudeCodeWebInterface {
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
 
+        // Enable copy-to-clipboard from the terminal. xterm swallows key events,
+        // so without this Ctrl+C over a selection is sent as SIGINT and text can
+        // never be copied. Convention: copy when there is a selection, otherwise
+        // let Ctrl+C fall through as an interrupt.
+        this.terminal.attachCustomKeyEventHandler((e) => {
+            if (e.type !== 'keydown') return true;
+            const key = (e.key || '').toLowerCase();
+            if (key === 'c' && (e.ctrlKey || e.metaKey)) {
+                const selection = this.terminal.getSelection();
+                if (selection) {
+                    this.copyToClipboard(selection);
+                    this.terminal.clearSelection();
+                    return false; // handled — do not forward to the shell
+                }
+            }
+            return true;
+        });
+
+        // Handle OSC 52 clipboard writes. Programs running in the terminal (e.g.
+        // Claude Code) copy by emitting `ESC ] 52 ; c ; <base64> ST`. xterm does
+        // not act on this by default, so the copy silently failed in the browser.
+        // Decode it and write to the real clipboard (with our HTTP fallback).
+        this.terminal.parser.registerOscHandler(52, (payload) => this.handleOsc52(payload));
+
+        // Mobile touch scrolling. Programs like Claude Code enable mouse tracking
+        // (the terminal gets the `enable-mouse-events` class), which routes touch
+        // drags to the app as mouse events instead of scrolling the viewport — so
+        // swiping does nothing on a phone. Translate vertical swipes into terminal
+        // scrolls. Mobile-only: on desktop this handler is never attached, so wheel
+        // scrolling and selection are completely unaffected.
+        if (this.isMobile) {
+            this.setupMobileTouchScroll(document.getElementById('terminal'), this.terminal);
+        }
+
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 // Filter out focus tracking sequences before sending
@@ -360,6 +414,85 @@ class ClaudeCodeWebInterface {
                 this.send({ type: 'resize', cols, rows });
             }
         });
+    }
+
+    // Translate one-finger vertical swipes into terminal scrolling. Needed on
+    // mobile because mouse-tracking mode swallows touch drags. Small movements
+    // (taps) pass through untouched so tapping/clicking in the TUI still works.
+    setupMobileTouchScroll(termEl, terminal) {
+        if (!termEl || !terminal) return;
+        let startY = null, lastY = null, scrolling = false;
+        const THRESHOLD = 8; // px before a drag counts as a scroll (lets taps through)
+
+        termEl.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) { startY = lastY = e.touches[0].clientY; scrolling = false; }
+            else { startY = lastY = null; }
+        }, { passive: true });
+
+        termEl.addEventListener('touchmove', (e) => {
+            if (e.touches.length !== 1 || lastY === null) return;
+            const y = e.touches[0].clientY;
+            if (!scrolling && Math.abs(y - startY) < THRESHOLD) return;
+            scrolling = true;
+            const vp = termEl.querySelector('.xterm-viewport');
+            const rows = terminal.rows || 24;
+            const cell = (vp && vp.clientHeight) ? vp.clientHeight / rows : 18;
+            const lines = Math.round((y - lastY) / cell);
+            if (lines !== 0) {
+                terminal.scrollLines(-lines); // finger down → reveal earlier lines
+                lastY = y;
+            }
+            e.preventDefault(); // own the gesture: no page rubber-band, no stray app clicks
+        }, { passive: false });
+
+        const end = () => { startY = lastY = null; scrolling = false; };
+        termEl.addEventListener('touchend', end, { passive: true });
+        termEl.addEventListener('touchcancel', end, { passive: true });
+    }
+
+    // OSC 52 payload is "<selection>;<base64>" e.g. "c;SGVsbG8=". A base64 of
+    // "?" is a read/query request, which we don't support. Returns true when
+    // handled so xterm doesn't pass the sequence through as visible text.
+    handleOsc52(payload) {
+        try {
+            const sep = payload.indexOf(';');
+            if (sep === -1) return true;
+            const b64 = payload.slice(sep + 1).trim();
+            if (!b64 || b64 === '?') return true; // query/clear — nothing to copy
+            const binary = atob(b64);
+            // atob yields a Latin1 string; reinterpret bytes as UTF-8 so that
+            // multibyte text (e.g. Chinese) is decoded correctly.
+            const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+            const text = new TextDecoder('utf-8').decode(bytes);
+            this.copyToClipboard(text);
+        } catch (_) { /* malformed payload — ignore */ }
+        return true;
+    }
+
+    // Copy text to the clipboard. Uses the async Clipboard API in a secure
+    // context (https/localhost) and falls back to a hidden-textarea +
+    // execCommand for plain-HTTP LAN access, where navigator.clipboard is
+    // unavailable.
+    copyToClipboard(text) {
+        if (!text) return;
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).catch(() => this._legacyCopy(text));
+        } else {
+            this._legacyCopy(text);
+        }
+    }
+
+    _legacyCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (err) { /* ignore */ }
+        document.body.removeChild(ta);
     }
 
     showSessionSelectionModal() {
@@ -452,9 +585,11 @@ class ClaudeCodeWebInterface {
         if (startAgentBtn) startAgentBtn.addEventListener('click', () => this.startAgentSession());
         if (settingsBtn) settingsBtn.addEventListener('click', () => this.showSettings());
         if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
-        
+
         // Tile view toggle
         // Mobile menu event listeners
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        if (hamburgerBtn) hamburgerBtn.addEventListener('click', () => this.toggleMobileMenu());
         if (closeMenuBtn) closeMenuBtn.addEventListener('click', () => this.closeMobileMenu());
         if (settingsBtnMobile) {
             settingsBtnMobile.addEventListener('click', () => {
@@ -673,11 +808,20 @@ class ClaudeCodeWebInterface {
                     this.hideOverlay();
                     // Don't auto-focus to avoid focus tracking sequences
                     // User can click to focus when ready
+                } else if (this.pendingStart) {
+                    // The user already chose an assistant before picking a folder;
+                    // start it now in the newly-created session (no second prompt).
+                    const { kind, options } = this.pendingStart;
+                    this.pendingStart = null;
+                    console.log('[session_joined] Auto-starting pending assistant:', kind);
+                    if (kind === 'codex') this.startCodexSession(options);
+                    else if (kind === 'agent') this.startAgentSession(options);
+                    else this.startClaudeSession(options);
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
-                    
+
                     if (isNewSession) {
                         console.log('[session_joined] New session detected, showing start prompt');
                         this.showOverlay('startPrompt');
@@ -832,6 +976,9 @@ class ClaudeCodeWebInterface {
     }
 
     startClaudeSession(options = {}) {
+        // Require a project directory before starting — otherwise it would run in
+        // the launch/home directory. Prompt for a folder first if none is chosen.
+        if (this.ensureProjectFolder('claude', options)) return;
         // If no session, create one first
         if (!this.currentClaudeSessionId) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
@@ -856,6 +1003,7 @@ class ClaudeCodeWebInterface {
     }
 
     startCodexSession(options = {}) {
+        if (this.ensureProjectFolder('codex', options)) return;
         // If no session, create one first
         if (!this.currentClaudeSessionId) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
@@ -880,6 +1028,7 @@ class ClaudeCodeWebInterface {
     }
 
     startAgentSession(options = {}) {
+        if (this.ensureProjectFolder('agent', options)) return;
         // If no session, create one first
         if (!this.currentClaudeSessionId) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
@@ -908,15 +1057,15 @@ class ClaudeCodeWebInterface {
     toggleMobileMenu() {
         const mobileMenu = document.getElementById('mobileMenu');
         const hamburgerBtn = document.getElementById('hamburgerBtn');
-        mobileMenu.classList.toggle('active');
-        hamburgerBtn.classList.toggle('active');
+        if (mobileMenu) mobileMenu.classList.toggle('active');
+        if (hamburgerBtn) hamburgerBtn.classList.toggle('active');
     }
 
     closeMobileMenu() {
         const mobileMenu = document.getElementById('mobileMenu');
         const hamburgerBtn = document.getElementById('hamburgerBtn');
-        mobileMenu.classList.remove('active');
-        hamburgerBtn.classList.remove('active');
+        if (mobileMenu) mobileMenu.classList.remove('active');
+        if (hamburgerBtn) hamburgerBtn.classList.remove('active');
     }
 
     fitTerminal() {
@@ -952,7 +1101,42 @@ class ClaudeCodeWebInterface {
 
     updateWorkingDir(dir) {
         // Working dir display removed with header - shown in tab titles
+        this.currentWorkingDir = dir || null;
         console.log('Working directory:', dir);
+    }
+
+    // Whether starting an assistant should first prompt for a project folder.
+    // True when there is no chosen directory, or the directory would be the
+    // launch/home directory (which we don't treat as a real project).
+    needsFolderSelection() {
+        const dir = this.currentClaudeSessionId ? this.currentWorkingDir : this.selectedWorkingDir;
+        if (!dir) return true;
+        // Not a real project: the launch dir, the user's home, or filesystem root.
+        if (this.baseFolder && dir === this.baseFolder) return true;
+        if (this.homeDir && dir === this.homeDir) return true;
+        if (dir === '/') return true;
+        return false;
+    }
+
+    // Open the folder browser to pick a project, routing the selection into the
+    // new-session flow. Returns true if selection was required (caller should
+    // stop and let the user choose).
+    ensureProjectFolder(kind, options) {
+        if (!this.needsFolderSelection()) return false;
+        // Remember which assistant the user picked so we can auto-start it in the
+        // chosen folder — avoids making them pick the assistant a second time.
+        this.pendingStart = { kind: kind || 'claude', options: options || {} };
+        this.isCreatingNewSession = true;
+        this.hideOverlay(); // hide the "Choose Your Assistant" prompt behind the folder browser
+        this.showFolderBrowser();
+        return true;
+    }
+
+    // Cancelling folder selection abandons any pending auto-start.
+    cancelFolderBrowser() {
+        this.pendingStart = null;
+        this.isCreatingNewSession = false;
+        this.closeFolderBrowser();
     }
 
     showOverlay(contentId) {
@@ -1078,7 +1262,7 @@ class ClaudeCodeWebInterface {
         upBtn.addEventListener('click', () => this.navigateToParent());
         homeBtn.addEventListener('click', () => this.navigateToHome());
         selectBtn.addEventListener('click', () => this.selectCurrentFolder());
-        cancelBtn.addEventListener('click', () => this.closeFolderBrowser());
+        cancelBtn.addEventListener('click', () => this.cancelFolderBrowser());
         showHiddenCheckbox.addEventListener('change', () => this.loadFolders(this.currentFolderPath));
         createFolderBtn.addEventListener('click', () => this.showCreateFolderInput());
         confirmCreateBtn.addEventListener('click', () => this.createFolder());
@@ -1096,7 +1280,7 @@ class ClaudeCodeWebInterface {
         // Close modal when clicking outside
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
-                this.closeFolderBrowser();
+                this.cancelFolderBrowser();
             }
         });
     }
@@ -1187,6 +1371,7 @@ class ClaudeCodeWebInterface {
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
                 <span class="folder-name">${folder.name}</span>
+                ${folder.isSymlink ? '<span class="folder-symlink" title="Symbolic link">↗</span>' : ''}
             `;
             folderItem.addEventListener('click', () => this.loadFolders(folder.path));
             folderList.appendChild(folderItem);

@@ -1434,6 +1434,14 @@ body {
     text-overflow: ellipsis;
 }
 
+.folder-symlink {
+    flex-shrink: 0;
+    margin-left: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    opacity: 0.8;
+}
+
 .folder-browser-footer {
     display: flex;
     justify-content: space-between;

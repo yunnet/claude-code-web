@@ -41,7 +41,9 @@ class Split {
             theme: this.app?.terminal?.options?.theme || {
                 background: '#0d1117',
                 foreground: '#c9d1d9',
-                cursor: '#58a6ff'
+                cursor: '#58a6ff',
+                selectionBackground: 'rgba(88, 166, 255, 0.35)',
+                selectionForeground: '#0d1117'
             }
         });
         
@@ -51,7 +53,35 @@ class Split {
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
         this.terminal.open(terminalDiv);
-        
+
+        // Copy selection with Ctrl/Cmd+C (falls through to SIGINT when nothing
+        // is selected). Reuses the app's clipboard helper, with a local fallback.
+        this.terminal.attachCustomKeyEventHandler((e) => {
+            if (e.type !== 'keydown') return true;
+            const key = (e.key || '').toLowerCase();
+            if (key === 'c' && (e.ctrlKey || e.metaKey)) {
+                const selection = this.terminal.getSelection();
+                if (selection) {
+                    if (this.app && typeof this.app.copyToClipboard === 'function') {
+                        this.app.copyToClipboard(selection);
+                    } else if (navigator.clipboard && window.isSecureContext) {
+                        navigator.clipboard.writeText(selection).catch(() => {});
+                    }
+                    this.terminal.clearSelection();
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        // OSC 52 clipboard writes from programs in the terminal (e.g. Claude Code).
+        this.terminal.parser.registerOscHandler(52, (payload) => {
+            if (this.app && typeof this.app.handleOsc52 === 'function') {
+                return this.app.handleOsc52(payload);
+            }
+            return true;
+        });
+
         // Setup terminal input handler
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {

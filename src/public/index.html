@@ -53,6 +53,14 @@
         
         <!-- Session Tabs Bar -->
         <div class="session-tabs-bar" id="sessionTabsBar">
+            <!-- Hamburger menu (mobile only) — opens the slide-in menu with
+                 Sessions / Close Session / Settings. Element was missing in the
+                 shipped build, leaving the mobile menu unreachable. -->
+            <button class="hamburger-btn" id="hamburgerBtn" title="Menu" aria-label="Open menu">
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+            </button>
             <div class="tabs-section">
                 <div class="tabs-container" id="tabsContainer">
                     <!-- Tabs will be dynamically added here -->
