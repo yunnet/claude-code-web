@@ -355,6 +355,11 @@ class ClaudeCodeWebInterface {
             macOptionIsMeta: true,
             // Blink the cursor like a native terminal.
             cursorBlink: true,
+            // Native-terminal scroll feel: animate the scroll instead of jumping,
+            // and let Shift+wheel scroll fast through long output.
+            smoothScrollDuration: 100,
+            fastScrollModifier: 'shift',
+            fastScrollSensitivity: 5,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
             windowOptions: {
                 reportFocus: false
