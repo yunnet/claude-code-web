@@ -470,8 +470,13 @@ class ClaudeCodeWebInterface {
         // Terminal title parity. Claude Code sets the terminal title (OSC 0/2) to
         // reflect its state; a native terminal shows it in the window/tab. Mirror
         // it to the browser tab so the status is visible even when backgrounded.
+        // Strip Claude's leading animated spinner glyph (✳ ✶ ✻ ✽ ● …) and any
+        // other leading symbol decoration — next to the favicon it looks like a
+        // second tab icon. Keep only the actual title text.
         this.terminal.onTitleChange((title) => {
-            if (title && title.trim()) document.title = title.trim();
+            if (!title) return;
+            const cleaned = title.replace(/^[\s\p{S}]+/u, '').trim();
+            if (cleaned) document.title = cleaned;
         });
 
         // Paste / drop images into the terminal (single-view). We can't hand a
