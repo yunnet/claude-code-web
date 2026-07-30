@@ -68,6 +68,15 @@ class ClaudeBridge {
       }
 
       const args = dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : [];
+      // Route Claude's notification events (task finished / needs input /
+      // permission prompt) to the terminal bell. The BEL byte travels through
+      // the PTY→WebSocket→xterm and our onBell handler turns it into a beep +
+      // desktop notification — the web equivalent of a native terminal alerting
+      // you. In a browser the terminal bell is the only channel that can reach
+      // the user (Claude's own desktop notifications fire server-side and never
+      // arrive). Injected per-session via --settings so the user's own
+      // settings.json is left untouched.
+      args.push('--settings', JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
       const claudeProcess = spawn(this.claudeCommand, args, {
         cwd: workingDir,
         env: {
