@@ -77,7 +77,7 @@ class CodexBridge {
         },
         cols,
         rows,
-        name: 'xterm-color'
+        name: 'xterm-256color'
       });
 
       const session = {

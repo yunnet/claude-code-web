@@ -38,6 +38,8 @@ class Split {
             cursorBlink: true,
             convertEol: true,
             allowProposedApi: true,
+            // Match the main terminal: Option/Alt as Meta for Claude Code shortcuts.
+            macOptionIsMeta: true,
             theme: this.app?.terminal?.options?.theme || {
                 background: '#0d1117',
                 foreground: '#c9d1d9',
@@ -52,12 +54,35 @@ class Split {
         
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
+
+        // Unicode v11 widths so emoji / box-drawing align (matches main terminal).
+        try {
+            if (window.Unicode11Addon) {
+                this.terminal.loadAddon(new Unicode11Addon.Unicode11Addon());
+                this.terminal.unicode.activeVersion = '11';
+            }
+        } catch (e) {
+            console.warn('Unicode11 addon unavailable (split):', e);
+        }
+
         this.terminal.open(terminalDiv);
 
         // Copy selection with Ctrl/Cmd+C (falls through to SIGINT when nothing
         // is selected). Reuses the app's clipboard helper, with a local fallback.
         this.terminal.attachCustomKeyEventHandler((e) => {
             if (e.type !== 'keydown') return true;
+
+            // Shift+Enter / Option(Alt)+Enter → newline (not submit). See app.js
+            // for the full rationale: xterm can't distinguish these from Enter, so
+            // we send LF (\n == Ctrl+J), which Claude Code treats as a newline.
+            if (e.key === 'Enter' && (e.shiftKey || e.altKey) && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.socket.send(JSON.stringify({ type: 'input', data: '\n' }));
+                }
+                return false;
+            }
+
             const key = (e.key || '').toLowerCase();
             if (key === 'c' && (e.ctrlKey || e.metaKey)) {
                 const selection = this.terminal.getSelection();

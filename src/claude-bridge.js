@@ -78,7 +78,9 @@ class ClaudeBridge {
         },
         cols,
         rows,
-        name: 'xterm-color'
+        // Match TERM above: advertise a 256-color terminfo, not the 8-color
+        // 'xterm-color', so Claude Code enables its full color/UI rendering.
+        name: 'xterm-256color'
       });
 
       const session = {

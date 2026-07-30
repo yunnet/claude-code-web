@@ -350,6 +350,9 @@ class ClaudeCodeWebInterface {
             scrollback: 10000,
             rightClickSelectsWord: false,
             allowTransparency: true,
+            // Treat Option/Alt as Meta so Claude Code's Option shortcuts (e.g.
+            // Option+P to switch models) reach the CLI instead of being eaten.
+            macOptionIsMeta: true,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
             windowOptions: {
                 reportFocus: false
@@ -361,7 +364,19 @@ class ClaudeCodeWebInterface {
         
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
-        
+
+        // Activate Unicode v11 width tables so emoji and box-drawing characters
+        // measure the same width the native terminal gives them — otherwise
+        // Claude Code's framed UI drifts out of alignment.
+        try {
+            if (window.Unicode11Addon) {
+                this.terminal.loadAddon(new Unicode11Addon.Unicode11Addon());
+                this.terminal.unicode.activeVersion = '11';
+            }
+        } catch (e) {
+            console.warn('Unicode11 addon unavailable:', e);
+        }
+
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
 
@@ -371,6 +386,18 @@ class ClaudeCodeWebInterface {
         // let Ctrl+C fall through as an interrupt.
         this.terminal.attachCustomKeyEventHandler((e) => {
             if (e.type !== 'keydown') return true;
+
+            // Shift+Enter / Option(Alt)+Enter → insert a newline instead of
+            // submitting. xterm.js can't distinguish these from plain Enter (all
+            // send \r) because it lacks the Kitty keyboard protocol. Claude Code
+            // maps LF (\n, i.e. Ctrl+J) to "newline" in EVERY terminal with no
+            // setup, so we send that directly — no protocol negotiation needed.
+            if (e.key === 'Enter' && (e.shiftKey || e.altKey) && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                this.send({ type: 'input', data: '\n' });
+                return false; // handled — do not let xterm send \r (submit)
+            }
+
             const key = (e.key || '').toLowerCase();
             if (key === 'c' && (e.ctrlKey || e.metaKey)) {
                 const selection = this.terminal.getSelection();
@@ -415,10 +442,49 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // Terminal bell parity. A native terminal rings on BEL (0x07); Claude
+        // Code emits it (e.g. on completion when the terminal bell channel is on).
+        // Surface it as a short beep, and a desktop notification if the tab is
+        // in the background — so a long task can finish while you work elsewhere.
+        this.terminal.onBell(() => this.handleBell());
+
         // Paste / drop images into the terminal (single-view). We can't hand a
         // real clipboard image to the shell, so upload it and inject the saved
         // file path into the prompt for Claude Code to read.
         this.setupImagePaste();
+    }
+
+    // Ring the terminal bell: a short WebAudio blip plus, when the tab is hidden,
+    // a browser notification. Best-effort — silently ignores unsupported browsers
+    // or denied permissions.
+    handleBell() {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (Ctx) {
+                this._audioCtx = this._audioCtx || new Ctx();
+                const ctx = this._audioCtx;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 880;
+                gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
+                osc.connect(gain).connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.2);
+            }
+        } catch (e) { /* audio blocked before first interaction — ignore */ }
+
+        try {
+            if (document.hidden && 'Notification' in window) {
+                if (Notification.permission === 'granted') {
+                    new Notification(`${this.getAlias('claude')} needs your attention`);
+                } else if (Notification.permission !== 'denied') {
+                    Notification.requestPermission();
+                }
+            }
+        } catch (e) { /* notifications unsupported — ignore */ }
     }
 
     // Wire paste (Ctrl/Cmd+V) and drag-drop of image files onto the terminal.

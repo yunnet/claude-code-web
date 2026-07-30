@@ -71,7 +71,7 @@ class AgentBridge {
         },
         cols,
         rows,
-        name: 'xterm-color'
+        name: 'xterm-256color'
       });
 
       const session = {
