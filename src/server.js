@@ -105,10 +105,16 @@ class ClaudeCodeWebServer {
   }
 
   isPathWithinBase(targetPath) {
+    // The folder browser must let a NEW session be created in ANY project
+    // directory, so navigation is not locked to the launch directory — a user
+    // creating a session picks wherever their project lives. `baseFolder` is
+    // only the default starting directory shown when the browser opens (and the
+    // target of the "home" button). This is a local, auth-protected tool running
+    // as the user, so it may browse anywhere the user's own account can.
+    // Any resolvable absolute path is allowed.
     try {
-      const resolvedTarget = path.resolve(targetPath);
-      const resolvedBase = path.resolve(this.baseFolder);
-      return resolvedTarget.startsWith(resolvedBase);
+      path.resolve(targetPath);
+      return true;
     } catch (error) {
       return false;
     }
