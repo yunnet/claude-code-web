@@ -1496,6 +1496,16 @@ body {
     transition: background-color 0.2s ease;
 }
 
+/* Desktop: the session menu (Sessions / Close Session / Reconnect / Clear /
+   Settings) lives in the slide-in menu this button opens. It was mobile-only,
+   which left desktop users with no way to exit a session or switch project
+   folder — only the gear was reachable. Show it on desktop too, on the right
+   next to the gear. Mobile keeps its own rule below (hamburger on the left). */
+@media (min-width: 769px) {
+    .hamburger-btn { display: flex; order: 5; }
+    .tab-actions { order: 6; }
+}
+
 .hamburger-btn:hover {
     background-color: var(--bg-tertiary);
 }
