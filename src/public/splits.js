@@ -40,6 +40,8 @@ class Split {
             allowProposedApi: true,
             // Match the main terminal: Option/Alt as Meta for Claude Code shortcuts.
             macOptionIsMeta: true,
+            // Match the main terminal's scrollback (default is only 1000).
+            scrollback: 10000,
             theme: this.app?.terminal?.options?.theme || {
                 background: '#0d1117',
                 foreground: '#c9d1d9',

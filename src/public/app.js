@@ -353,6 +353,8 @@ class ClaudeCodeWebInterface {
             // Treat Option/Alt as Meta so Claude Code's Option shortcuts (e.g.
             // Option+P to switch models) reach the CLI instead of being eaten.
             macOptionIsMeta: true,
+            // Blink the cursor like a native terminal.
+            cursorBlink: true,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
             windowOptions: {
                 reportFocus: false
@@ -447,6 +449,13 @@ class ClaudeCodeWebInterface {
         // Surface it as a short beep, and a desktop notification if the tab is
         // in the background — so a long task can finish while you work elsewhere.
         this.terminal.onBell(() => this.handleBell());
+
+        // Terminal title parity. Claude Code sets the terminal title (OSC 0/2) to
+        // reflect its state; a native terminal shows it in the window/tab. Mirror
+        // it to the browser tab so the status is visible even when backgrounded.
+        this.terminal.onTitleChange((title) => {
+            if (title && title.trim()) document.title = title.trim();
+        });
 
         // Paste / drop images into the terminal (single-view). We can't hand a
         // real clipboard image to the shell, so upload it and inject the saved
