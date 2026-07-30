@@ -973,6 +973,10 @@ class ClaudeCodeWebServer {
     try {
       await this.claudeBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        // Resume the Claude conversation if this cc-web session has started Claude
+        // before (bound to this session id via --session-id). Survives server
+        // restarts / dead PTYs instead of starting a brand-new conversation.
+        resume: !!session.claudeStarted,
         // Spawn the PTY at the client's real terminal size so the program uses
         // the full width. Without this it defaults to 80 cols and wide screens
         // show a blank strip on the right. (Falls back to the bridge default.)
@@ -1021,6 +1025,13 @@ class ClaudeCodeWebServer {
       session.active = true;
       session.agent = 'claude';
       session.lastActivity = new Date();
+      // Remember that Claude has been started under this session id so future
+      // starts (incl. after a server restart) resume the conversation instead of
+      // starting fresh. Persist it so the flag survives a restart.
+      if (!session.claudeStarted) {
+        session.claudeStarted = true;
+        this.saveSessionsToDisk();
+      }
       // Set session start time if this is the first time Claude is started in this session
       if (!session.sessionStartTime) {
         session.sessionStartTime = new Date();

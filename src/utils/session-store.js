@@ -31,6 +31,10 @@ class SessionStore {
                 created: session.created || new Date(),
                 lastActivity: session.lastActivity || new Date(),
                 workingDir: session.workingDir || process.cwd(),
+                // Whether Claude has been started under this session id (bound via
+                // --session-id). Lets a restart resume the conversation instead of
+                // starting fresh. loadSessions restores it via the `...session` spread.
+                claudeStarted: !!session.claudeStarted,
                 active: false, // Always set to false when saving (processes won't persist)
                 outputBuffer: Array.isArray(session.outputBuffer) ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
                 connections: [], // Clear connections (they won't persist)

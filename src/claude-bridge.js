@@ -51,6 +51,7 @@ class ClaudeBridge {
     const {
       workingDir = process.cwd(),
       dangerouslySkipPermissions = false,
+      resume = false,
       onOutput = () => {},
       onExit = () => {},
       onError = () => {},
@@ -58,113 +59,158 @@ class ClaudeBridge {
       rows = 24
     } = options;
 
-    try {
-      console.log(`Starting Claude session ${sessionId}`);
-      console.log(`Command: ${this.claudeCommand}`);
-      console.log(`Working directory: ${workingDir}`);
-      console.log(`Terminal size: ${cols}x${rows}`);
+    // Args shared by a fresh launch and a resume.
+    const baseArgs = dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : [];
+    // Route Claude's notification events (task finished / needs input /
+    // permission prompt) to the terminal bell — the BEL travels PTY→WS→xterm and
+    // the client's onBell turns it into a beep + notification. Injected via
+    // --settings so the user's own settings.json is untouched.
+    baseArgs.push('--settings', JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
+
+    // Spawn Claude bound to our stable session id. `--session-id <uuid>` starts a
+    // brand-new conversation under that id; `--resume <uuid>` re-attaches to it
+    // later (after a server restart or a dead PTY) so the conversation is NOT
+    // lost. The id is the cc-web session's own uuid.
+    const spawnClaude = (mode) => {
+      const idArgs = mode === 'resume' ? ['--resume', sessionId] : ['--session-id', sessionId];
+      console.log(`Starting Claude session ${sessionId} [${mode}] cwd=${workingDir} size=${cols}x${rows}`);
       if (dangerouslySkipPermissions) {
         console.log(`⚠️ WARNING: Skipping permissions with --dangerously-skip-permissions flag`);
       }
-
-      const args = dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : [];
-      // Route Claude's notification events (task finished / needs input /
-      // permission prompt) to the terminal bell. The BEL byte travels through
-      // the PTY→WebSocket→xterm and our onBell handler turns it into a beep +
-      // desktop notification — the web equivalent of a native terminal alerting
-      // you. In a browser the terminal bell is the only channel that can reach
-      // the user (Claude's own desktop notifications fire server-side and never
-      // arrive). Injected per-session via --settings so the user's own
-      // settings.json is left untouched.
-      args.push('--settings', JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
-      const claudeProcess = spawn(this.claudeCommand, args, {
+      // Make every spawned Claude a clean TOP-LEVEL session. If cc-web itself was
+      // launched from inside a Claude session, the inherited CLAUDE_CODE_CHILD_SESSION
+      // marker turns OFF transcript saving — which would make --resume find nothing
+      // ("No conversation found") and silently break session recovery. Drop that
+      // marker and force session persistence so conversations are always saved and
+      // resumable, regardless of how cc-web was started.
+      const childEnv = {
+        ...process.env,
+        TERM: 'xterm-256color',
+        FORCE_COLOR: '1',
+        COLORTERM: 'truecolor',
+        // Force synchronized output (DEC mode 2026): xterm 6.0 supports it, so
+        // Claude wraps each frame in BSU/ESU and repaints atomically — no
+        // stream flicker/tearing over the WebSocket.
+        CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1',
+        // Persist transcripts so --resume can restore the conversation.
+        CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: '1'
+      };
+      delete childEnv.CLAUDE_CODE_CHILD_SESSION;
+      return spawn(this.claudeCommand, [...idArgs, ...baseArgs], {
         cwd: workingDir,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          FORCE_COLOR: '1',
-          COLORTERM: 'truecolor',
-          // Force synchronized output (DEC mode 2026). Our xterm (6.0+) supports
-          // it, but Claude Code can't auto-detect that over this web PTY, so it
-          // would otherwise fall back to unsynchronized redraws that tear/flicker
-          // while streaming. With this on, Claude wraps each frame in BSU/ESU and
-          // xterm paints it atomically — smooth, native-like updates.
-          CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1'
-        },
+        env: childEnv,
         cols,
         rows,
-        // Match TERM above: advertise a 256-color terminfo, not the 8-color
-        // 'xterm-color', so Claude Code enables its full color/UI rendering.
+        // 256-color terminfo to match TERM above.
         name: 'xterm-256color'
       });
+    };
+
+    try {
+      let mode = resume ? 'resume' : 'fresh';
+      let launchedAt = Date.now();
+      let fellBack = false;
+      let trustPromptHandled = false;
+      let dataBuffer = '';
 
       const session = {
-        process: claudeProcess,
+        process: null,
         workingDir,
         created: new Date(),
         active: true,
         killTimeout: null
       };
-
       this.sessions.set(sessionId, session);
 
-      // Track if we've seen the trust prompt
-      let trustPromptHandled = false;
-      let dataBuffer = '';
+      // Wire the PTY's data/exit/error handlers. Extracted so we can re-wire a
+      // replacement process when a failed --resume falls back to a fresh launch.
+      // Each handler ignores events from a stale process (one we've already
+      // replaced), so the fallback swap can't corrupt session state.
+      const wire = (proc) => {
+        proc.onData((data) => {
+          if (proc !== session.process) return; // stale process — ignore
+          if (process.env.DEBUG) {
+            console.log(`Session ${sessionId} output:`, data);
+          }
+          dataBuffer += data;
+          // Resume fallback (interactive): Claude prints "No conversation found"
+          // WITHOUT exiting when the id is unknown. Detect it and relaunch fresh
+          // once, bound to the same id, so the session recovers instead of
+          // sitting on an error. (Belt-and-suspenders with the exit check below.)
+          if (mode === 'resume' && !fellBack && dataBuffer.includes('No conversation found')) {
+            triggerFallback('no conversation found');
+            return; // swallow the failed-resume output; fresh process takes over
+          }
+          if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
+            trustPromptHandled = true;
+            console.log(`Auto-accepting trust prompt for session ${sessionId}`);
+            setTimeout(() => {
+              try { session.process.write('\r'); } catch (_) {}
+              console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
+            }, 500);
+          }
+          if (dataBuffer.length > 10000) {
+            dataBuffer = dataBuffer.slice(-5000);
+          }
+          onOutput(data);
+        });
 
-      claudeProcess.onData((data) => {
-        if (process.env.DEBUG) {
-          console.log(`Session ${sessionId} output:`, data);
-        }
-        
-        // Buffer data to check for trust prompt
-        dataBuffer += data;
-        
-        // Check for trust prompt and auto-accept it
-        if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
-          trustPromptHandled = true;
-          console.log(`Auto-accepting trust prompt for session ${sessionId}`);
-          // The prompt shows "Enter to confirm" which means option 1 is already selected
-          // Just send Enter to confirm
-          setTimeout(() => {
-            claudeProcess.write('\r');
-            console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
-          }, 500);
-        }
-        
-        // Clear buffer periodically to prevent memory issues
-        if (dataBuffer.length > 10000) {
-          dataBuffer = dataBuffer.slice(-5000);
-        }
-        
-        onOutput(data);
-      });
+        proc.onExit((exitCode, signal) => {
+          if (proc !== session.process) return; // stale process — ignore
+          // node-pty may report exit as (code, signal) or a single
+          // {exitCode, signal} object depending on version — normalise it.
+          const code = (exitCode && typeof exitCode === 'object') ? exitCode.exitCode : exitCode;
+          const sig = (exitCode && typeof exitCode === 'object') ? exitCode.signal : signal;
 
-      claudeProcess.onExit((exitCode, signal) => {
-        console.log(`Claude session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
-        // Clear kill timeout if process exited naturally
-        if (session.killTimeout) {
-          clearTimeout(session.killTimeout);
-          session.killTimeout = null;
-        }
-        session.active = false;
-        this.sessions.delete(sessionId);
-        onExit(exitCode, signal);
-      });
+          // Resume fallback: re-attach failed fast (e.g. bad session state) —
+          // relaunch fresh once.
+          if (mode === 'resume' && !fellBack && code !== 0 && (Date.now() - launchedAt) < 8000) {
+            triggerFallback(`quick exit code ${code}`);
+            return; // swallow the failed-resume exit; fresh process takes over
+          }
 
-      claudeProcess.on('error', (error) => {
-        console.error(`Claude session ${sessionId} error:`, error);
-        // Clear kill timeout if process errored
-        if (session.killTimeout) {
-          clearTimeout(session.killTimeout);
-          session.killTimeout = null;
-        }
-        session.active = false;
-        this.sessions.delete(sessionId);
-        onError(error);
-      });
+          console.log(`Claude session ${sessionId} exited with code ${code}, signal ${sig}`);
+          if (session.killTimeout) {
+            clearTimeout(session.killTimeout);
+            session.killTimeout = null;
+          }
+          session.active = false;
+          this.sessions.delete(sessionId);
+          onExit(exitCode, signal);
+        });
 
-      console.log(`Claude session ${sessionId} started successfully`);
+        proc.on('error', (error) => {
+          if (proc !== session.process) return; // stale process — ignore
+          console.error(`Claude session ${sessionId} error:`, error);
+          if (session.killTimeout) {
+            clearTimeout(session.killTimeout);
+            session.killTimeout = null;
+          }
+          session.active = false;
+          this.sessions.delete(sessionId);
+          onError(error);
+        });
+      };
+
+      // Swap the current (failed-resume) process for a fresh one bound to the
+      // same id. Only ever runs once (guarded by `fellBack`).
+      const triggerFallback = (reason) => {
+        fellBack = true;
+        mode = 'fresh';
+        launchedAt = Date.now();
+        trustPromptHandled = false;
+        dataBuffer = '';
+        const old = session.process;
+        console.log(`Resume fallback for ${sessionId} (${reason}); starting a fresh session`);
+        session.process = spawnClaude('fresh'); // becomes the new current process
+        wire(session.process);
+        if (old && old !== session.process) { try { old.kill(); } catch (_) {} }
+      };
+
+      session.process = spawnClaude(mode);
+      wire(session.process);
+
+      console.log(`Claude session ${sessionId} started successfully [${mode}]`);
       return session;
 
     } catch (error) {
