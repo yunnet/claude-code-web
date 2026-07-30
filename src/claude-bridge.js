@@ -74,7 +74,13 @@ class ClaudeBridge {
           ...process.env,
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
-          COLORTERM: 'truecolor'
+          COLORTERM: 'truecolor',
+          // Force synchronized output (DEC mode 2026). Our xterm (6.0+) supports
+          // it, but Claude Code can't auto-detect that over this web PTY, so it
+          // would otherwise fall back to unsynchronized redraws that tear/flicker
+          // while streaming. With this on, Claude wraps each frame in BSU/ESU and
+          // xterm paints it atomically — smooth, native-like updates.
+          CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1'
         },
         cols,
         rows,
