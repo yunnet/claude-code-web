@@ -49,6 +49,9 @@
     <!-- Unicode v11 width tables: Claude Code draws box-drawing characters and
          emoji; without this xterm uses the old v6 widths and the TUI misaligns. -->
     <script src="https://unpkg.com/xterm-addon-unicode11@0.6.0/lib/xterm-addon-unicode11.js"></script>
+    <!-- Canvas renderer: far faster than the DOM renderer for the constantly
+         repainting Claude Code TUI, and (unlike WebGL) keeps the transparent bg. -->
+    <script src="https://unpkg.com/xterm-addon-canvas@0.5.0/lib/xterm-addon-canvas.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
 </head>
 <body>

@@ -380,6 +380,18 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+
+        // Canvas renderer (must load after open()): much faster than the default
+        // DOM renderer under Claude Code's heavy repaints, while honoring the
+        // transparent background. Falls back to DOM on any failure.
+        try {
+            if (window.CanvasAddon) {
+                this.terminal.loadAddon(new CanvasAddon.CanvasAddon());
+            }
+        } catch (e) {
+            console.warn('Canvas renderer unavailable, using DOM renderer:', e);
+        }
+
         this.fitTerminal();
 
         // Enable copy-to-clipboard from the terminal. xterm swallows key events,

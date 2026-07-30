@@ -69,6 +69,15 @@ class Split {
 
         this.terminal.open(terminalDiv);
 
+        // Canvas renderer (match main terminal), with DOM fallback.
+        try {
+            if (window.CanvasAddon) {
+                this.terminal.loadAddon(new CanvasAddon.CanvasAddon());
+            }
+        } catch (e) {
+            console.warn('Canvas renderer unavailable (split), using DOM:', e);
+        }
+
         // Copy selection with Ctrl/Cmd+C (falls through to SIGINT when nothing
         // is selected). Reuses the app's clipboard helper, with a local fallback.
         this.terminal.attachCustomKeyEventHandler((e) => {
