@@ -40,9 +40,11 @@
       })();
     </script>
     <link rel="stylesheet" href="style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Fonts vendored locally (src/public/vendor/fonts/) instead of Google Fonts,
+         so the app makes zero external requests — fully offline-capable for local
+         use. latin + latin-ext subsets of JetBrains Mono (terminal) and Inter (UI);
+         other scripts (incl. CJK) fall back to system fonts as before. -->
+    <link rel="stylesheet" href="vendor/fonts/fonts.css">
     <!-- xterm and addons are vendored locally (src/public/vendor/xterm/) instead
          of a CDN, so the terminal loads with zero network dependency — offline,
          on an isolated LAN, or if unpkg is down — just like a native terminal. -->
