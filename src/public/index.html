@@ -143,6 +143,27 @@
                 <div class="start-prompt" id="startPrompt" style="display: none;">
                     <h2>Choose Your Assistant</h2>
                     <p>Select one to start in this directory.</p>
+                    <!-- Claude launch options: map to `claude --model` and
+                         `--permission-mode`. Ignored by Codex/Cursor starts. -->
+                    <div class="start-options" id="claudeStartOptions">
+                        <label class="start-option">
+                            <span>Model</span>
+                            <select id="claudeModelSelect">
+                                <option value="">Default</option>
+                                <option value="opus">Opus</option>
+                                <option value="sonnet">Sonnet</option>
+                                <option value="haiku">Haiku</option>
+                            </select>
+                        </label>
+                        <label class="start-option">
+                            <span>Permission</span>
+                            <select id="claudePermissionSelect">
+                                <option value="">Default</option>
+                                <option value="plan">Plan mode</option>
+                                <option value="acceptEdits">Accept edits</option>
+                            </select>
+                        </label>
+                    </div>
                     <div class="start-buttons">
                         <button id="startBtn" class="btn btn-primary">Start Claude</button>
                         <button id="dangerousSkipBtn" class="btn btn-danger" title="Dangerously skip permissions. Use with caution.">Dangerous Claude</button>

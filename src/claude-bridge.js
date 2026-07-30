@@ -52,6 +52,8 @@ class ClaudeBridge {
       workingDir = process.cwd(),
       dangerouslySkipPermissions = false,
       resume = false,
+      model = '',
+      permissionMode = '',
       onOutput = () => {},
       onExit = () => {},
       onError = () => {},
@@ -66,6 +68,18 @@ class ClaudeBridge {
     // the client's onBell turns it into a beep + notification. Injected via
     // --settings so the user's own settings.json is untouched.
     baseArgs.push('--settings', JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
+
+    // Optional model / permission-mode chosen in the UI. Whitelisted so a bad
+    // value can't reach the CLI (spawn uses an argv array, so there is no shell
+    // injection risk either). --dangerously-skip-permissions wins over an
+    // explicit permission mode.
+    if (model && ['opus', 'sonnet', 'haiku'].includes(model)) {
+      baseArgs.push('--model', model);
+    }
+    if (!dangerouslySkipPermissions && permissionMode &&
+        ['plan', 'acceptEdits', 'default'].includes(permissionMode)) {
+      baseArgs.push('--permission-mode', permissionMode);
+    }
 
     // Spawn Claude bound to our stable session id. `--session-id <uuid>` starts a
     // brand-new conversation under that id; `--resume <uuid>` re-attaches to it

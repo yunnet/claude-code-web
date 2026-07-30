@@ -762,8 +762,8 @@ class ClaudeCodeWebInterface {
         const closeMenuBtn = document.getElementById('closeMenuBtn');
         const settingsBtnMobile = document.getElementById('settingsBtnMobile');
         
-        if (startBtn) startBtn.addEventListener('click', () => this.startClaudeSession());
-        if (dangerousSkipBtn) dangerousSkipBtn.addEventListener('click', () => this.startClaudeSession({ dangerouslySkipPermissions: true }));
+        if (startBtn) startBtn.addEventListener('click', () => this.startClaudeSession(this.claudeStartOptions()));
+        if (dangerousSkipBtn) dangerousSkipBtn.addEventListener('click', () => this.startClaudeSession({ ...this.claudeStartOptions(), dangerouslySkipPermissions: true }));
         if (startCodexBtn) startCodexBtn.addEventListener('click', () => this.startCodexSession());
         if (dangerousCodexBtn) dangerousCodexBtn.addEventListener('click', () => this.startCodexSession({ dangerouslySkipPermissions: true }));
         if (startAgentBtn) startAgentBtn.addEventListener('click', () => this.startAgentSession());
@@ -1178,6 +1178,18 @@ class ClaudeCodeWebInterface {
             default:
                 console.log('Unknown message type:', message.type);
         }
+    }
+
+    // Read the Claude launch options (model / permission mode) chosen in the
+    // "Choose Your Assistant" modal. Empty values are omitted so Claude uses its
+    // own defaults. Passed through to `claude --model` / `--permission-mode`.
+    claudeStartOptions() {
+        const opts = {};
+        const model = document.getElementById('claudeModelSelect')?.value || '';
+        const permissionMode = document.getElementById('claudePermissionSelect')?.value || '';
+        if (model) opts.model = model;
+        if (permissionMode) opts.permissionMode = permissionMode;
+        return opts;
     }
 
     startClaudeSession(options = {}) {
