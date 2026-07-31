@@ -355,9 +355,11 @@ class ClaudeCodeWebInterface {
             macOptionIsMeta: true,
             // Blink the cursor like a native terminal.
             cursorBlink: true,
-            // Native-terminal scroll feel: animate the scroll instead of jumping,
-            // and let Shift+wheel scroll fast through long output.
-            smoothScrollDuration: 100,
+            // Native-terminal scroll feel: animate wheel scrolls on desktop.
+            // On mobile keep it instant (0) — the touch handler drives scrolling
+            // itself with its own inertia, and animating each step there makes the
+            // viewport lag behind the finger.
+            smoothScrollDuration: isMobile ? 0 : 100,
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
@@ -610,12 +612,55 @@ class ClaudeCodeWebInterface {
     // (taps) pass through untouched so tapping/clicking in the TUI still works.
     setupMobileTouchScroll(termEl, terminal) {
         if (!termEl || !terminal) return;
-        let startY = null, lastY = null, scrolling = false;
-        const THRESHOLD = 8; // px before a drag counts as a scroll (lets taps through)
+        let startY = null, lastY = null, lastT = 0, scrolling = false;
+        let velocity = 0;          // finger speed in px/ms (sign: + = moving down)
+        let momentumRAF = null;
+        let acc = 0;               // leftover fractional pixels → whole lines
+        const THRESHOLD = 8;       // px before a drag counts as a scroll (lets taps through)
+
+        const cellPx = () => {
+            const vp = termEl.querySelector('.xterm-viewport');
+            const rows = terminal.rows || 24;
+            return (vp && vp.clientHeight) ? vp.clientHeight / rows : 18;
+        };
+        const wheelTarget = () =>
+            termEl.querySelector('.xterm-viewport') || termEl.querySelector('.xterm') || termEl;
+        const stopMomentum = () => {
+            if (momentumRAF) { cancelAnimationFrame(momentumRAF); momentumRAF = null; }
+        };
+
+        // Scroll by whole lines; +lines reveals OLDER content. Two cases:
+        //  • normal buffer (inline Claude / shell): scroll xterm's own scrollback.
+        //  • alternate buffer (Claude fullscreen TUI, mouse tracking on): there is
+        //    NO xterm scrollback, so forward mouse-wheel events — xterm encodes
+        //    them and the app scrolls its own view. One wheel notch per line.
+        const applyScroll = (lines) => {
+            if (!lines) return;
+            if (terminal.buffer.active.type === 'alternate') {
+                const el = wheelTarget();
+                const deltaY = lines > 0 ? -120 : 120; // older → wheel up
+                for (let i = Math.abs(lines); i > 0; i--) {
+                    el.dispatchEvent(new WheelEvent('wheel', {
+                        deltaY, deltaMode: 0, clientX: 40, clientY: 80, bubbles: true, cancelable: true
+                    }));
+                }
+            } else {
+                terminal.scrollLines(-lines);
+            }
+        };
+        const flush = () => {
+            const cell = cellPx();
+            const lines = (acc / cell) | 0; // truncate toward 0
+            if (lines !== 0) { applyScroll(lines); acc -= lines * cell; }
+        };
 
         termEl.addEventListener('touchstart', (e) => {
-            if (e.touches.length === 1) { startY = lastY = e.touches[0].clientY; scrolling = false; }
-            else { startY = lastY = null; }
+            stopMomentum(); // a new touch halts any ongoing glide (native feel)
+            if (e.touches.length === 1) {
+                startY = lastY = e.touches[0].clientY;
+                lastT = performance.now();
+                scrolling = false; velocity = 0; acc = 0;
+            } else { startY = lastY = null; }
         }, { passive: true });
 
         termEl.addEventListener('touchmove', (e) => {
@@ -623,20 +668,36 @@ class ClaudeCodeWebInterface {
             const y = e.touches[0].clientY;
             if (!scrolling && Math.abs(y - startY) < THRESHOLD) return;
             scrolling = true;
-            const vp = termEl.querySelector('.xterm-viewport');
-            const rows = terminal.rows || 24;
-            const cell = (vp && vp.clientHeight) ? vp.clientHeight / rows : 18;
-            const lines = Math.round((y - lastY) / cell);
-            if (lines !== 0) {
-                terminal.scrollLines(-lines); // finger down → reveal earlier lines
-                lastY = y;
-            }
+            const now = performance.now();
+            const dy = y - lastY; lastY = y;
+            velocity = dy / Math.max(1, now - lastT); // px/ms for inertia
+            lastT = now;
+            acc += dy; flush();
             e.preventDefault(); // own the gesture: no page rubber-band, no stray app clicks
         }, { passive: false });
 
-        const end = () => { startY = lastY = null; scrolling = false; };
+        const end = () => {
+            const wasScrolling = scrolling;
+            const v0 = velocity;
+            startY = lastY = null; scrolling = false; velocity = 0;
+            // Flick → keep scrolling in that direction with decaying inertia, so a
+            // quick swipe reviews a long history instead of needing many drags.
+            if (!wasScrolling || Math.abs(v0) < 0.25) { acc = 0; return; }
+            let v = v0;              // px/ms
+            let last = performance.now();
+            const step = () => {
+                const now = performance.now();
+                const dt = now - last; last = now;
+                acc += v * dt; flush();
+                v *= Math.pow(0.95, dt / 16);   // ~5% decay per 16ms frame
+                momentumRAF = (Math.abs(v) > 0.02) ? requestAnimationFrame(step) : null;
+            };
+            momentumRAF = requestAnimationFrame(step);
+        };
         termEl.addEventListener('touchend', end, { passive: true });
-        termEl.addEventListener('touchcancel', end, { passive: true });
+        termEl.addEventListener('touchcancel', () => {
+            stopMomentum(); startY = lastY = null; scrolling = false; velocity = 0; acc = 0;
+        }, { passive: true });
     }
 
     // OSC 52 payload is "<selection>;<base64>" e.g. "c;SGVsbG8=". A base64 of
