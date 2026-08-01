@@ -47,6 +47,10 @@ body {
     color: var(--text-primary);
     height: 100vh;
     height: 100dvh; /* Dynamic viewport height for mobile */
+    /* JS drives this from visualViewport so the soft keyboard shrinks the app
+       instead of hiding the terminal's bottom rows behind it. Falls back to
+       100dvh before the script runs. */
+    height: var(--app-height, 100dvh);
     overflow: hidden;
     width: 100%;
     overscroll-behavior: none; /* Disable pull-to-refresh */
@@ -59,8 +63,10 @@ body {
     flex-direction: column;
     height: 100vh;
     height: 100dvh; /* Dynamic viewport height for mobile */
+    height: var(--app-height, 100dvh);
     max-height: 100vh;
     max-height: 100dvh;
+    max-height: var(--app-height, 100dvh);
 }
 
 # Icon helpers

@@ -123,10 +123,8 @@ class ClaudeCodeWebInterface {
             this.showFolderBrowser();
         }
         
-        window.addEventListener('resize', () => {
-            this.fitTerminal();
-        });
-        
+        this.setupViewportSizing();
+
         window.addEventListener('beforeunload', () => {
             this.disconnect();
         });
@@ -1349,6 +1347,51 @@ class ClaudeCodeWebInterface {
         const hamburgerBtn = document.getElementById('hamburgerBtn');
         if (mobileMenu) mobileMenu.classList.remove('active');
         if (hamburgerBtn) hamburgerBtn.classList.remove('active');
+    }
+
+    // Bind the app's height to the *visual* viewport, not the layout viewport.
+    // On mobile, 100dvh does NOT shrink when the soft keyboard opens — the
+    // keyboard overlays the page — so the terminal keeps its full height and
+    // Claude's bottom UI (the input box + the "bypass permissions … · ← for
+    // agents" hint line) ends up hidden behind the keyboard. Driving the height
+    // from visualViewport.height makes the terminal shrink exactly like a native
+    // terminal window does, keeping that last line visible above the keyboard.
+    setupViewportSizing() {
+        const vv = window.visualViewport;
+
+        const applyHeight = () => {
+            const h = vv ? vv.height : window.innerHeight;
+            document.documentElement.style.setProperty('--app-height', `${Math.round(h)}px`);
+        };
+
+        // Refitting the terminal (and messaging the PTY) is comparatively heavy,
+        // and the keyboard open/close animation fires a burst of resize events —
+        // so debounce the fit while updating the CSS height immediately (cheap).
+        let refitTimer = null;
+        const scheduleRefit = () => {
+            if (refitTimer) return;
+            refitTimer = requestAnimationFrame(() => {
+                refitTimer = null;
+                this.fitTerminal();
+                // Keep pinned to the bottom so Claude's freshly-reflowed bottom UI
+                // stays in view after the viewport changes.
+                if (this.terminal) {
+                    try { this.terminal.scrollToBottom(); } catch (_) {}
+                }
+            });
+        };
+
+        const onChange = () => { applyHeight(); scheduleRefit(); };
+
+        if (vv) {
+            vv.addEventListener('resize', onChange);
+            vv.addEventListener('scroll', onChange);
+        }
+        window.addEventListener('resize', onChange);
+        window.addEventListener('orientationchange', onChange);
+
+        // Prime it once on startup.
+        applyHeight();
     }
 
     fitTerminal() {
