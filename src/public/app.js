@@ -1390,6 +1390,25 @@ class ClaudeCodeWebInterface {
         window.addEventListener('resize', onChange);
         window.addEventListener('orientationchange', onChange);
 
+        // Container size can change without a window resize — the tab bar
+        // appearing/growing, or the terminal webfont finishing loading and
+        // changing the cell metrics. Observe the wrapper (whose box is driven by
+        // layout, not by terminal content, so this can't self-trigger a loop)
+        // and refit so `rows` always matches what's actually visible.
+        try {
+            const wrapper = document.getElementById('terminal')?.parentElement;
+            if (wrapper && 'ResizeObserver' in window) {
+                new ResizeObserver(scheduleRefit).observe(wrapper);
+            }
+        } catch (_) {}
+
+        // Refit once the terminal font has loaded — its cell height can differ
+        // from the fallback font used at first paint, which otherwise leaves the
+        // initial `rows` off by a line or two.
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(scheduleRefit).catch(() => {});
+        }
+
         // Prime it once on startup.
         applyHeight();
     }

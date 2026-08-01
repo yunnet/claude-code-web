@@ -457,6 +457,10 @@ body {
     flex: 1;
     overflow: hidden;
     position: relative;
+    /* Visual inset for the terminal. Lives here (not on #terminal) so FitAddon
+       measures the true available height — see the note on #terminal. */
+    padding: 20px;
+    box-sizing: border-box;
 }
 
 
@@ -858,7 +862,15 @@ body {
 #terminal {
     width: 100%;
     height: 100%;
-    padding: 20px;
+    /* No padding here: this is the element passed to terminal.open(), so it is
+       the parent FitAddon measures. With box-sizing:border-box + height:100%,
+       getComputedStyle(#terminal).height reports the BORDER-box height, and
+       FitAddon only compensates for the inner .xterm's padding (0) — so any
+       padding here is double-counted as usable rows and the bottom row(s)
+       (where Claude draws its "bypass permissions … · ← for agents" hint)
+       overflow the viewport and get clipped. The visual inset lives on the
+       parent .terminal-wrapper instead. */
+    padding: 0;
     box-sizing: border-box;
 }
 
@@ -1825,10 +1837,15 @@ pre, code {
     }
     
     #terminal {
-        padding: 8px;
+        /* Inset moved to .terminal-wrapper — see the desktop rule's note. */
+        padding: 0;
         width: 100%;
         height: 100%;
         box-sizing: border-box;
+    }
+
+    .terminal-wrapper {
+        padding: 8px;
     }
     
     /* Force xterm to respect mobile viewport */
@@ -1904,7 +1921,7 @@ pre, code {
     .start-buttons .btn { width: 100%; }
     
     /* Extra terminal fixes for very small screens */
-    #terminal {
+    .terminal-wrapper {
         padding: 4px;
     }
     
