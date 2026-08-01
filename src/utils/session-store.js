@@ -4,8 +4,13 @@ const os = require('os');
 
 class SessionStore {
     constructor() {
-        // Store sessions in user's home directory
-        this.storageDir = path.join(os.homedir(), '.claude-code-web');
+        // Store sessions in user's home directory. CCW_DATA_DIR lets a second
+        // instance (e.g. this dev sandbox on another port) keep its own session
+        // list instead of fighting over ~/.claude-code-web/sessions.json with the
+        // stable instance. The claude CLI's own ~/.claude config stays shared.
+        this.storageDir = process.env.CCW_DATA_DIR
+            ? path.resolve(process.env.CCW_DATA_DIR)
+            : path.join(os.homedir(), '.claude-code-web');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this.initializeStorage();
     }
