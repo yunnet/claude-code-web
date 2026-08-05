@@ -11,6 +11,12 @@ class UsageReader {
     this.cacheTimeout = 5000; // Cache for 5 seconds for more real-time updates
     this.sessionDurationHours = sessionDurationHours; // Default 5 hours from first message
     this.overlappingSessions = []; // Track overlapping sessions
+    // Per-file parse cache keyed by absolute path -> { mtimeMs, size, entries }.
+    // Transcript .jsonl files are append-only and mostly unchanged between
+    // scans, so re-parsing every file on every usage poll re-reads hundreds of
+    // MB each time (CPU/GC thrash + fd churn). Cache the parsed entries and only
+    // re-parse a file when its mtime or size actually changes.
+    this.fileCache = new Map();
   }
 
   /**
@@ -365,85 +371,119 @@ class UsageReader {
   }
 
   async readJsonlFile(filePath, cutoffTime) {
+    // Serve from the per-file cache when the file is unchanged (same mtime+size).
+    // We cache the full, cutoff-agnostic parsed set and apply the caller's time
+    // window afterwards, so a given file is parsed at most once per change no
+    // matter how many callers / time windows ask for it.
+    let allEntries;
+    try {
+      const stat = await fs.stat(filePath);
+      const cached = this.fileCache.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        allEntries = cached.entries;
+      } else {
+        allEntries = await this.parseJsonlFile(filePath);
+        this.fileCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, entries: allEntries });
+      }
+    } catch (e) {
+      // stat failed (file removed mid-scan, etc.) — parse directly without caching.
+      allEntries = await this.parseJsonlFile(filePath);
+    }
+
+    if (!cutoffTime) return allEntries.slice();
+    return allEntries.filter(e => new Date(e.timestamp) >= cutoffTime);
+  }
+
+  // Parse a whole .jsonl transcript into the compact usage entries used by the
+  // stats calculators. Cutoff-agnostic (returns every assistant-with-usage
+  // entry, deduped within the file) so results can be cached and reused across
+  // different time windows. Streams the file and always tears the stream down
+  // on completion/error so file descriptors can't leak under overlapping scans.
+  async parseJsonlFile(filePath) {
     const entries = [];
     // File-level deduplication cache - prevents duplicates within this file only
     const fileProcessedEntries = new Set();
-    
+
     return new Promise((resolve) => {
-      const rl = readline.createInterface({
-        input: createReadStream(filePath),
-        crlfDelay: Infinity
-      });
+      const stream = createReadStream(filePath);
+      const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try { rl.close(); } catch (_) {}
+        try { stream.destroy(); } catch (_) {}
+        resolve(entries);
+      };
 
       rl.on('line', (line) => {
         try {
           const entry = JSON.parse(line);
-          
-          // Filter by timestamp
-          if (entry.timestamp && new Date(entry.timestamp) >= cutoffTime) {
-            // Check for duplicate entries using unique hash (file-level deduplication)
-            const uniqueHash = this.createUniqueHash(entry);
-            if (uniqueHash && fileProcessedEntries.has(uniqueHash)) {
-              // Skip duplicate entry within this file
-              return;
+          if (!entry.timestamp) return;
+
+          // Check for duplicate entries using unique hash (file-level deduplication)
+          const uniqueHash = this.createUniqueHash(entry);
+          if (uniqueHash && fileProcessedEntries.has(uniqueHash)) {
+            // Skip duplicate entry within this file
+            return;
+          }
+
+          // Extract relevant data - check for usage in both locations
+          const usage = entry.usage || (entry.message && entry.message.usage);
+          const rawModel = entry.model || (entry.message && entry.message.model) || 'unknown';
+          const model = this.normalizeModelName(rawModel);
+
+          // Check if this is an assistant message with usage data
+          if ((entry.type === 'assistant' || (entry.message && entry.message.role === 'assistant')) && usage) {
+            const inputTokens = usage.input_tokens || 0;
+            const outputTokens = usage.output_tokens || 0;
+            const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
+            const cacheReadTokens = usage.cache_read_input_tokens || 0;
+
+            // Calculate cost based on Claude's actual pricing model
+            // These prices match Claude's current cost calculations (2025)
+            let totalCost = 0;
+            if (model === 'opus') {
+              // Claude 4.1 Opus pricing: $15/$75 per million tokens
+              totalCost = (inputTokens * 0.000015) + (outputTokens * 0.000075);
+              // Cache costs: creation same as input, read is 10% of input
+              totalCost += (cacheCreationTokens * 0.000015) + (cacheReadTokens * 0.0000015);
+            } else if (model === 'sonnet') {
+              // Claude 4.0 Sonnet pricing: $3/$15 per million tokens
+              totalCost = (inputTokens * 0.000003) + (outputTokens * 0.000015);
+              totalCost += (cacheCreationTokens * 0.000003) + (cacheReadTokens * 0.0000003);
+            } else if (model === 'haiku') {
+              // Claude 3 Haiku pricing (legacy)
+              totalCost = (inputTokens * 0.00000025) + (outputTokens * 0.00000125);
+              totalCost += (cacheCreationTokens * 0.00000025) + (cacheReadTokens * 0.000000025);
             }
-            
-            // Extract relevant data - check for usage in both locations
-            const usage = entry.usage || (entry.message && entry.message.usage);
-            const rawModel = entry.model || (entry.message && entry.message.model) || 'unknown';
-            const model = this.normalizeModelName(rawModel);
-            
-            // Check if this is an assistant message with usage data
-            if ((entry.type === 'assistant' || (entry.message && entry.message.role === 'assistant')) && usage) {
-              const inputTokens = usage.input_tokens || 0;
-              const outputTokens = usage.output_tokens || 0;
-              const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
-              const cacheReadTokens = usage.cache_read_input_tokens || 0;
-              
-              // Calculate cost based on Claude's actual pricing model
-              // These prices match Claude's current cost calculations (2025)
-              let totalCost = 0;
-              if (model === 'opus') {
-                // Claude 4.1 Opus pricing: $15/$75 per million tokens
-                totalCost = (inputTokens * 0.000015) + (outputTokens * 0.000075);
-                // Cache costs: creation same as input, read is 10% of input
-                totalCost += (cacheCreationTokens * 0.000015) + (cacheReadTokens * 0.0000015);
-              } else if (model === 'sonnet') {
-                // Claude 4.0 Sonnet pricing: $3/$15 per million tokens
-                totalCost = (inputTokens * 0.000003) + (outputTokens * 0.000015);
-                totalCost += (cacheCreationTokens * 0.000003) + (cacheReadTokens * 0.0000003);
-              } else if (model === 'haiku') {
-                // Claude 3 Haiku pricing (legacy)
-                totalCost = (inputTokens * 0.00000025) + (outputTokens * 0.00000125);
-                totalCost += (cacheCreationTokens * 0.00000025) + (cacheReadTokens * 0.000000025);
-              }
-              
-              // Use total_cost from usage if available, but check if it's in cents
-              let finalCost = totalCost;
-              if (usage.total_cost !== undefined) {
-                // If total_cost is greater than 1, it's likely in cents
-                finalCost = usage.total_cost > 1 ? usage.total_cost / 100 : usage.total_cost;
-              }
-              
-              const processedEntry = {
-                timestamp: entry.timestamp,
-                model: model,
-                inputTokens: inputTokens,
-                outputTokens: outputTokens,
-                cacheCreationTokens: cacheCreationTokens,
-                cacheReadTokens: cacheReadTokens,
-                totalCost: finalCost,
-                sessionId: entry.sessionId,
-                messageId: entry.message_id || entry.messageId || (entry.message && entry.message.id) || null,
-                requestId: entry.request_id || entry.requestId || null
-              };
-              
-              entries.push(processedEntry);
-              
-              // Mark this entry as processed within this file if we have a unique hash
-              if (uniqueHash) {
-                fileProcessedEntries.add(uniqueHash);
-              }
+
+            // Use total_cost from usage if available, but check if it's in cents
+            let finalCost = totalCost;
+            if (usage.total_cost !== undefined) {
+              // If total_cost is greater than 1, it's likely in cents
+              finalCost = usage.total_cost > 1 ? usage.total_cost / 100 : usage.total_cost;
+            }
+
+            const processedEntry = {
+              timestamp: entry.timestamp,
+              model: model,
+              inputTokens: inputTokens,
+              outputTokens: outputTokens,
+              cacheCreationTokens: cacheCreationTokens,
+              cacheReadTokens: cacheReadTokens,
+              totalCost: finalCost,
+              sessionId: entry.sessionId,
+              messageId: entry.message_id || entry.messageId || (entry.message && entry.message.id) || null,
+              requestId: entry.request_id || entry.requestId || null
+            };
+
+            entries.push(processedEntry);
+
+            // Mark this entry as processed within this file if we have a unique hash
+            if (uniqueHash) {
+              fileProcessedEntries.add(uniqueHash);
             }
           }
         } catch (e) {
@@ -451,13 +491,14 @@ class UsageReader {
         }
       });
 
-      rl.on('close', () => {
-        resolve(entries);
-      });
-
+      rl.on('close', finish);
       rl.on('error', (error) => {
-        console.error('Error reading file:', filePath, error);
-        resolve(entries);
+        console.error('Error reading file:', filePath, error && error.message);
+        finish();
+      });
+      stream.on('error', (error) => {
+        console.error('Error reading file:', filePath, error && error.message);
+        finish();
       });
     });
   }

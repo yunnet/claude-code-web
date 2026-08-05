@@ -45,6 +45,15 @@ class ClaudeCodeWebServer {
     this.autoSaveInterval = null;
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
+    // Shared usage snapshot cache. Every connected browser polls get_usage on a
+    // timer, and each poll runs four transcript-scanning calculators. Without
+    // this, N clients × frequent polls fan out into overlapping full scans that
+    // peg CPU and leak file descriptors. Cache the heavy result briefly and
+    // collapse concurrent requests onto a single in-flight computation.
+    this._usageSnapshot = null;
+    this._usageSnapshotTime = 0;
+    this._usageSnapshotInflight = null;
+    this._usageSnapshotTTL = 15000; // ms
     // Commands dropdown removed
     // Assistant aliases (for UI display only)
     this.aliases = {
@@ -1323,20 +1332,40 @@ class ClaudeCodeWebServer {
     this.webSocketConnections.clear();
   }
 
+  // Compute the heavy, transcript-scanning usage numbers at most once per TTL,
+  // and share a single in-flight computation across concurrent callers so that
+  // many clients polling get_usage don't trigger overlapping full scans.
+  async getUsageSnapshot() {
+    const now = Date.now();
+    if (this._usageSnapshot && (now - this._usageSnapshotTime) < this._usageSnapshotTTL) {
+      return this._usageSnapshot;
+    }
+    if (this._usageSnapshotInflight) {
+      return this._usageSnapshotInflight;
+    }
+    this._usageSnapshotInflight = (async () => {
+      // Sequential (not Promise.all) to keep the peak open-file count low.
+      const currentSessionStats = await this.usageReader.getCurrentSessionStats();
+      const burnRateData = await this.usageReader.calculateBurnRate(60);
+      const overlappingSessions = await this.usageReader.detectOverlappingSessions();
+      const dailyStats = await this.usageReader.getUsageStats(24);
+      const snapshot = { currentSessionStats, burnRateData, overlappingSessions, dailyStats };
+      this._usageSnapshot = snapshot;
+      this._usageSnapshotTime = Date.now();
+      return snapshot;
+    })();
+    try {
+      return await this._usageSnapshotInflight;
+    } finally {
+      this._usageSnapshotInflight = null;
+    }
+  }
+
   async handleGetUsage(wsInfo) {
     try {
-      // Get usage stats for the current Claude session window
-      const currentSessionStats = await this.usageReader.getCurrentSessionStats();
-      
-      // Get burn rate calculations
-      const burnRateData = await this.usageReader.calculateBurnRate(60);
-      
-      // Get overlapping sessions
-      const overlappingSessions = await this.usageReader.detectOverlappingSessions();
-      
-      // Get 24h stats for additional context
-      const dailyStats = await this.usageReader.getUsageStats(24);
-      
+      const { currentSessionStats, burnRateData, overlappingSessions, dailyStats } =
+        await this.getUsageSnapshot();
+
       // Update analytics with current session data
       if (currentSessionStats && currentSessionStats.sessionStartTime) {
         // Start tracking this session in analytics

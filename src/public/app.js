@@ -2362,11 +2362,14 @@ class ClaudeCodeWebInterface {
             this.socket.send(JSON.stringify({ type: 'get_usage' }));
         }
         
-        // Start periodic updates if not already running
+        // Start periodic updates if not already running. Usage stats are
+        // expensive to compute server-side (transcript scans), so poll at a
+        // relaxed cadence and skip entirely while the tab is hidden.
         if (!this.usageUpdateTimer) {
             this.usageUpdateTimer = setInterval(() => {
+                if (document.hidden) return;
                 this.requestUsageStats();
-            }, 10000); // Update every 10 seconds for more real-time stats
+            }, 30000); // Update every 30 seconds
         }
     }
 
