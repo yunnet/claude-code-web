@@ -150,7 +150,18 @@ body {
 .session-tab.active {
     background-color: var(--bg-primary);
     color: var(--text-primary);
+    border-color: var(--accent);
     border-bottom-color: var(--bg-primary);
+    /* Accent bar along the top makes the active tab unmistakable even among
+       many tabs; the accent border ties it together. */
+    box-shadow: inset 0 3px 0 0 var(--accent);
+    font-weight: 600;
+    z-index: 2;
+}
+
+.session-tab.active .tab-name {
+    color: var(--accent);
+    font-weight: 600;
 }
 
 .session-tab.dragging {
