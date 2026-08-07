@@ -1718,6 +1718,22 @@ class ClaudeCodeWebInterface {
         
         upBtn.addEventListener('click', () => this.navigateToParent());
         homeBtn.addEventListener('click', () => this.navigateToHome());
+
+        // Let the path bar be typed into: Enter navigates to the entered path,
+        // Escape restores the current path. (Was readonly before.)
+        const pathInput = document.getElementById('currentPathInput');
+        if (pathInput) {
+            pathInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const target = pathInput.value.trim();
+                    if (target) this.loadFolders(target);
+                } else if (e.key === 'Escape') {
+                    pathInput.value = this.currentFolderPath || '';
+                    pathInput.blur();
+                }
+            });
+        }
         selectBtn.addEventListener('click', () => this.selectCurrentFolder());
         cancelBtn.addEventListener('click', () => this.cancelFolderBrowser());
         showHiddenCheckbox.addEventListener('change', () => this.loadFolders(this.currentFolderPath));
@@ -1814,12 +1830,33 @@ class ClaudeCodeWebInterface {
         
         // Clear and populate folder list
         folderList.innerHTML = '';
-        
+
+        // ".." entry to step up to the parent, reachable directly from the list
+        // (in addition to the up-arrow in the path bar). Shown even when there
+        // are no subfolders, so you're never stuck in a leaf directory.
+        if (data.parentPath) {
+            const upItem = document.createElement('div');
+            upItem.className = 'folder-item folder-item-parent';
+            upItem.innerHTML = `
+                <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 19a2 2 0 0 0 2-2V9l-2-3H9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2z"/>
+                    <polyline points="12 15 9 12 12 9"/>
+                    <line x1="9" y1="12" x2="16" y2="12"/>
+                </svg>
+                <span class="folder-name">.. (上级目录)</span>
+            `;
+            upItem.addEventListener('click', () => this.loadFolders(data.parentPath));
+            folderList.appendChild(upItem);
+        }
+
         if (data.folders.length === 0) {
-            folderList.innerHTML = '<div class="empty-folder-message">No folders found</div>';
+            const empty = document.createElement('div');
+            empty.className = 'empty-folder-message';
+            empty.textContent = data.parentPath ? 'No subfolders here' : 'No folders found';
+            folderList.appendChild(empty);
             return;
         }
-        
+
         data.folders.forEach(folder => {
             const folderItem = document.createElement('div');
             folderItem.className = 'folder-item';
