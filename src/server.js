@@ -330,6 +330,10 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
+        // Flow control: connections that have asked us to pause the PTY (slow
+        // renderer). The PTY stays paused while any connection is in this set.
+        pausedConnections: new Set(),
+        flowResumeTimer: null,
         outputBuffer: [],
         maxBufferSize: 1000
       };
@@ -819,7 +823,17 @@ class ClaudeCodeWebServer {
           }
         }
         break;
-      
+
+      case 'pause':
+      case 'resume':
+        if (wsInfo.claudeSessionId) {
+          const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+          if (session && session.connections.has(wsId)) {
+            this.handleFlowControl(session, wsId, data.type === 'pause');
+          }
+        }
+        break;
+
       case 'stop':
         if (wsInfo.claudeSessionId) {
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
@@ -878,6 +892,9 @@ class ClaudeCodeWebServer {
       active: false,
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
+      // Flow control: connections that have asked us to pause the PTY.
+      pausedConnections: new Set(),
+      flowResumeTimer: null,
       outputBuffer: [],
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
@@ -951,6 +968,7 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(wsInfo.claudeSessionId);
     if (session) {
       session.connections.delete(wsId);
+      this.clearConnectionFlowControl(session, wsId);
       session.lastActivity = new Date();
     }
 
@@ -1262,6 +1280,63 @@ class ClaudeCodeWebServer {
     }
   }
 
+  // Apply a pause/resume request from one connection. The PTY stays paused as
+  // long as ANY connection is paused (the slowest renderer drives the pace), so
+  // a fast client isn't throttled by a slow one and vice versa.
+  handleFlowControl(session, wsId, wantPause) {
+    if (!session.pausedConnections) session.pausedConnections = new Set();
+    const wasPaused = session.pausedConnections.size > 0;
+    if (wantPause) {
+      session.pausedConnections.add(wsId);
+    } else {
+      session.pausedConnections.delete(wsId);
+    }
+    const shouldPause = session.pausedConnections.size > 0;
+    if (shouldPause && !wasPaused) {
+      this.pauseSessionPty(session);
+      // Safety valve: never stay paused forever (e.g. a client that paused then
+      // vanished). Force-resume after 5s; a still-backed-up client re-pauses.
+      if (session.flowResumeTimer) clearTimeout(session.flowResumeTimer);
+      session.flowResumeTimer = setTimeout(() => {
+        session.flowResumeTimer = null;
+        session.pausedConnections.clear();
+        this.resumeSessionPty(session);
+      }, 5000);
+    } else if (!shouldPause && wasPaused) {
+      if (session.flowResumeTimer) { clearTimeout(session.flowResumeTimer); session.flowResumeTimer = null; }
+      this.resumeSessionPty(session);
+    }
+  }
+
+  pauseSessionPty(session) {
+    if (!session || !session.active || !session.agent) return;
+    try {
+      if (session.agent === 'codex') this.codexBridge.pause(session.id);
+      else if (session.agent === 'agent') this.agentBridge.pause(session.id);
+      else this.claudeBridge.pause(session.id);
+    } catch (_) {}
+  }
+
+  resumeSessionPty(session) {
+    if (!session || !session.agent) return;
+    try {
+      if (session.agent === 'codex') this.codexBridge.resume(session.id);
+      else if (session.agent === 'agent') this.agentBridge.resume(session.id);
+      else this.claudeBridge.resume(session.id);
+    } catch (_) {}
+  }
+
+  // Remove a connection from a session's flow-control set and resume the PTY if
+  // no one else is holding it paused. Called when a connection leaves/closes so
+  // a disconnect can't leave the PTY stuck paused.
+  clearConnectionFlowControl(session, wsId) {
+    if (!session || !session.pausedConnections) return;
+    if (session.pausedConnections.delete(wsId) && session.pausedConnections.size === 0) {
+      if (session.flowResumeTimer) { clearTimeout(session.flowResumeTimer); session.flowResumeTimer = null; }
+      this.resumeSessionPty(session);
+    }
+  }
+
   broadcastToSession(claudeSessionId, data) {
     const session = this.claudeSessions.get(claudeSessionId);
     if (!session) return;
@@ -1286,8 +1361,9 @@ class ClaudeCodeWebServer {
       const session = this.claudeSessions.get(wsInfo.claudeSessionId);
       if (session) {
         session.connections.delete(wsId);
+        this.clearConnectionFlowControl(session, wsId);
         session.lastActivity = new Date();
-        
+
         // Don't stop Claude if other connections exist
         if (session.connections.size === 0 && this.dev) {
           console.log(`No more connections to session ${wsInfo.claudeSessionId}`);

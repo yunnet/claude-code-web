@@ -259,6 +259,24 @@ class ClaudeBridge {
     }
   }
 
+  // Flow control: stop/resume reading from the PTY. When paused, node-pty stops
+  // draining the pty master, so the child (Claude) blocks once the OS buffer
+  // fills — backpressure that lets a slow browser catch up instead of the
+  // server buffering output unboundedly.
+  pause(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session && session.process) {
+      try { session.process.pause(); } catch (_) { /* pty may not support */ }
+    }
+  }
+
+  resume(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session && session.process) {
+      try { session.process.resume(); } catch (_) { /* pty may not support */ }
+    }
+  }
+
   async stopSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {

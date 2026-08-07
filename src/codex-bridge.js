@@ -163,6 +163,21 @@ class CodexBridge {
     }
   }
 
+  // Flow control: pause/resume reading from the PTY (see claude-bridge).
+  pause(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session && session.process) {
+      try { session.process.pause(); } catch (_) {}
+    }
+  }
+
+  resume(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session && session.process) {
+      try { session.process.resume(); } catch (_) {}
+    }
+  }
+
   async stopSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {

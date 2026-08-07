@@ -431,6 +431,15 @@ class ClaudeCodeWebInterface {
         this._termWriteQueue = [];
         this._termWriteScheduled = false;
 
+        // Flow control (backpressure). Track bytes received but not yet rendered
+        // by xterm. When the backlog exceeds HIGH we ask the server to pause the
+        // PTY; once it drains below LOW we resume. This stops a fast producer
+        // (Claude repainting) from outrunning the renderer and freezing input.
+        this._pendingBytes = 0;
+        this._flowPaused = false;
+        this._flowHigh = 128 * 1024;
+        this._flowLow = 16 * 1024;
+
         this.fitTerminal();
 
         // Enable copy-to-clipboard from the terminal. xterm swallows key events,
@@ -1461,6 +1470,8 @@ class ClaudeCodeWebInterface {
     queueTerminalWrite(data) {
         if (!data) return;
         this._termWriteQueue.push(data);
+        this._pendingBytes += data.length;
+        this._maybeFlowPause();
         if (!this._termWriteScheduled) {
             this._termWriteScheduled = true;
             requestAnimationFrame(() => this.flushTerminalWrites());
@@ -1469,21 +1480,49 @@ class ClaudeCodeWebInterface {
 
     // Flush queued output to xterm as a single write. Safe to call synchronously
     // (e.g. before writing a status line) to preserve ordering with the stream.
+    // The write callback fires once xterm has parsed the chunk, so it's the
+    // right place to decrement the backpressure watermark.
     flushTerminalWrites() {
         this._termWriteScheduled = false;
         if (!this._termWriteQueue || this._termWriteQueue.length === 0) return;
         const chunk = this._termWriteQueue.join('');
         this._termWriteQueue.length = 0;
         if (this.terminal) {
-            this.terminal.write(chunk);
+            const len = chunk.length;
+            this.terminal.write(chunk, () => {
+                this._pendingBytes = Math.max(0, this._pendingBytes - len);
+                this._maybeFlowResume();
+            });
         }
     }
 
     // Drop any pending output (used when switching/clearing sessions so stale
-    // bytes from the previous session can't land after the clear).
+    // bytes from the previous session can't land after the clear). Resets the
+    // backpressure watermark and lifts any pause we were holding.
     clearTerminalWriteQueue() {
         if (this._termWriteQueue) this._termWriteQueue.length = 0;
         this._termWriteScheduled = false;
+        this._pendingBytes = 0;
+        if (this._flowPaused) {
+            this._flowPaused = false;
+            this.send({ type: 'resume' });
+        }
+    }
+
+    // Ask the server to pause the PTY once the unrendered backlog is too large.
+    _maybeFlowPause() {
+        if (!this._flowPaused && this._pendingBytes > this._flowHigh) {
+            this._flowPaused = true;
+            this.send({ type: 'pause' });
+        }
+    }
+
+    // Resume once the backlog has drained back below the low watermark.
+    _maybeFlowResume() {
+        if (this._flowPaused && this._pendingBytes < this._flowLow) {
+            this._flowPaused = false;
+            this.send({ type: 'resume' });
+        }
     }
 
     fitTerminal() {
