@@ -386,16 +386,42 @@ class ClaudeCodeWebInterface {
 
         this.terminal.open(document.getElementById('terminal'));
 
-        // Canvas renderer (must load after open()): much faster than the default
-        // DOM renderer under Claude Code's heavy repaints, while honoring the
-        // transparent background. Falls back to DOM on any failure.
+        // Renderer (must load after open()). Prefer WebGL — it's markedly faster
+        // than canvas/DOM under Claude Code's heavy full-screen repaints, which is
+        // what keeps the terminal responsive when a lot is streaming. Fall back to
+        // canvas, then the built-in DOM renderer. If the GPU drops the WebGL
+        // context mid-session, dispose it and fall back so the terminal keeps
+        // rendering instead of freezing.
+        this.activeRenderer = 'dom';
+        const loadCanvasRenderer = () => {
+            try {
+                if (window.CanvasAddon) {
+                    this.terminal.loadAddon(new CanvasAddon.CanvasAddon());
+                    this.activeRenderer = 'canvas';
+                }
+            } catch (e) {
+                console.warn('Canvas renderer unavailable, using DOM renderer:', e);
+            }
+        };
         try {
-            if (window.CanvasAddon) {
-                this.terminal.loadAddon(new CanvasAddon.CanvasAddon());
+            if (window.WebglAddon) {
+                const webgl = new WebglAddon.WebglAddon();
+                webgl.onContextLoss(() => {
+                    console.warn('WebGL context lost — falling back to canvas renderer');
+                    try { webgl.dispose(); } catch (_) {}
+                    this.activeRenderer = 'dom';
+                    loadCanvasRenderer();
+                });
+                this.terminal.loadAddon(webgl);
+                this.activeRenderer = 'webgl';
+            } else {
+                loadCanvasRenderer();
             }
         } catch (e) {
-            console.warn('Canvas renderer unavailable, using DOM renderer:', e);
+            console.warn('WebGL renderer unavailable, falling back to canvas:', e);
+            loadCanvasRenderer();
         }
+        console.log('[terminal] renderer:', this.activeRenderer);
 
         // RAF write batching. Claude Code's TUI can emit output faster than xterm
         // can render (xterm caps itself at <16ms/frame, ~5-35 MB/s). Writing every

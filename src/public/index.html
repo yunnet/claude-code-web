@@ -56,6 +56,10 @@
     <script src="vendor/xterm/xterm-addon-unicode11.js"></script>
     <!-- Canvas renderer: far faster than the DOM renderer for the constantly
          repainting Claude Code TUI, and (unlike WebGL) keeps the transparent bg. -->
+    <!-- WebGL renderer (preferred): fastest under heavy TUI repaints. app.js
+         falls back to canvas, then DOM, if WebGL is unavailable or its context
+         is lost. -->
+    <script src="vendor/xterm/xterm-addon-webgl.js"></script>
     <script src="vendor/xterm/xterm-addon-canvas.js"></script>
     <link rel="stylesheet" href="vendor/xterm/xterm.css" />
 </head>
