@@ -397,6 +397,14 @@ class ClaudeCodeWebInterface {
             console.warn('Canvas renderer unavailable, using DOM renderer:', e);
         }
 
+        // RAF write batching. Claude Code's TUI can emit output faster than xterm
+        // can render (xterm caps itself at <16ms/frame, ~5-35 MB/s). Writing every
+        // WebSocket chunk immediately lets the internal buffer pile up until the
+        // terminal goes sluggish and stops echoing keystrokes. Instead we coalesce
+        // chunks and flush at most once per animation frame (~60/s).
+        this._termWriteQueue = [];
+        this._termWriteScheduled = false;
+
         this.fitTerminal();
 
         // Enable copy-to-clipboard from the terminal. xterm swallows key events,
@@ -1058,11 +1066,12 @@ class ClaudeCodeWebInterface {
                 
                 // Replay output buffer if available
                 if (message.outputBuffer && message.outputBuffer.length > 0) {
+                    this.clearTerminalWriteQueue();
                     this.terminal.clear();
                     message.outputBuffer.forEach(data => {
                         // Filter out focus tracking sequences (^[[I and ^[[O)
                         const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
-                        this.terminal.write(filteredData);
+                        this.queueTerminalWrite(filteredData);
                     });
                 }
                 
@@ -1098,6 +1107,7 @@ class ClaudeCodeWebInterface {
                         console.log('[session_joined] Existing session with stopped Claude, showing restart prompt');
                         // For existing sessions where Claude has stopped, show start prompt
                         // This allows the user to restart Claude in the same session
+                        this.flushTerminalWrites();
                         this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
                         this.showOverlay('startPrompt');
                     }
@@ -1108,8 +1118,9 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = null;
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
+                this.clearTerminalWriteQueue();
                 this.terminal.clear();
-                
+
                 // Update tab status
                 if (this.sessionTabManager && message.sessionId) {
                     this.sessionTabManager.updateTabStatus(message.sessionId, 'disconnected');
@@ -1153,17 +1164,20 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'claude_stopped':
+                this.flushTerminalWrites();
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} stopped\x1b[0m`);
                 // Show start prompt to allow restarting Claude in this session
                 this.showOverlay('startPrompt');
                 this.loadSessions(); // Refresh session list
                 break;
             case 'codex_stopped':
+                this.flushTerminalWrites();
                 this.terminal.writeln(`\r\n\x1b[33mCodex Code stopped\x1b[0m`);
                 this.showOverlay('startPrompt');
                 this.loadSessions();
                 break;
             case 'agent_stopped':
+                this.flushTerminalWrites();
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('agent')} stopped\x1b[0m`);
                 this.showOverlay('startPrompt');
                 this.loadSessions();
@@ -1172,8 +1186,8 @@ class ClaudeCodeWebInterface {
             case 'output':
                 // Filter out focus tracking sequences (^[[I and ^[[O)
                 const filteredData = message.data.replace(/\x1b\[\[?[IO]/g, '');
-                this.terminal.write(filteredData);
-                
+                this.queueTerminalWrite(filteredData);
+
                 // Update session activity indicator with output data
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, message.data);
@@ -1186,6 +1200,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'exit':
+                this.flushTerminalWrites();
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
                 
                 // Mark session as error if non-zero exit code
@@ -1332,6 +1347,7 @@ class ClaudeCodeWebInterface {
     }
 
     clearTerminal() {
+        this.clearTerminalWriteQueue();
         this.terminal.clear();
     }
 
@@ -1411,6 +1427,37 @@ class ClaudeCodeWebInterface {
 
         // Prime it once on startup.
         applyHeight();
+    }
+
+    // Queue terminal output for batched rendering on the next animation frame.
+    // Coalescing many small chunks into one write per frame keeps the render
+    // loop from falling behind under Claude Code's heavy repaints.
+    queueTerminalWrite(data) {
+        if (!data) return;
+        this._termWriteQueue.push(data);
+        if (!this._termWriteScheduled) {
+            this._termWriteScheduled = true;
+            requestAnimationFrame(() => this.flushTerminalWrites());
+        }
+    }
+
+    // Flush queued output to xterm as a single write. Safe to call synchronously
+    // (e.g. before writing a status line) to preserve ordering with the stream.
+    flushTerminalWrites() {
+        this._termWriteScheduled = false;
+        if (!this._termWriteQueue || this._termWriteQueue.length === 0) return;
+        const chunk = this._termWriteQueue.join('');
+        this._termWriteQueue.length = 0;
+        if (this.terminal) {
+            this.terminal.write(chunk);
+        }
+    }
+
+    // Drop any pending output (used when switching/clearing sessions so stale
+    // bytes from the previous session can't land after the clear).
+    clearTerminalWriteQueue() {
+        if (this._termWriteQueue) this._termWriteQueue.length = 0;
+        this._termWriteScheduled = false;
     }
 
     fitTerminal() {
@@ -2131,6 +2178,7 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = null;
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
+                this.clearTerminalWriteQueue();
                 this.terminal.clear();
                 this.showOverlay('startPrompt');
             }
