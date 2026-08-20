@@ -58,7 +58,13 @@ class ClaudeBridge {
       onExit = () => {},
       onError = () => {},
       cols = 80,
-      rows = 24
+      rows = 24,
+      // Hook relay wiring (from the server). When all three are present we
+      // register a Claude Code PreToolUse(ExitPlanMode) hook so plan mode is
+      // detected via a structured event instead of scraping the terminal.
+      hookScript = '',
+      hookPort = 0,
+      hookToken = ''
     } = options;
 
     // Args shared by a fresh launch and a resume.
@@ -67,7 +73,9 @@ class ClaudeBridge {
     // permission prompt) to the terminal bell — the BEL travels PTY→WS→xterm and
     // the client's onBell turns it into a beep + notification. Injected via
     // --settings so the user's own settings.json is untouched.
-    baseArgs.push('--settings', JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
+    baseArgs.push('--settings', JSON.stringify(
+      this.buildInjectedSettings(sessionId, { hookScript, hookPort, hookToken })
+    ));
 
     // Optional model / permission-mode chosen in the UI. Whitelisted so a bad
     // value can't reach the CLI (spawn uses an argv array, so there is no shell
@@ -231,6 +239,28 @@ class ClaudeBridge {
       console.error(`Failed to start Claude session ${sessionId}:`, error);
       throw new Error(`Failed to start Claude Code: ${error.message}`);
     }
+  }
+
+  // Build the settings object injected via `claude --settings`. Always routes
+  // notifications to the terminal bell; when hook-relay params are present it
+  // also registers a PreToolUse(ExitPlanMode) hook whose command relays the plan
+  // event to the server via bin/cc-hook.js. Claude presents a plan by calling
+  // the ExitPlanMode tool, so PreToolUse fires with the full plan in
+  // tool_input.plan. argv strings are single-quote escaped; token/session are
+  // uuids so there is no shell-injection risk. Extracted so it is unit-testable
+  // without spawning a PTY.
+  buildInjectedSettings(sessionId, { hookScript = '', hookPort = 0, hookToken = '' } = {}) {
+    const settings = { preferredNotifChannel: 'terminal_bell' };
+    if (hookScript && hookPort && hookToken) {
+      const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+      const command = `${q(process.execPath)} ${q(hookScript)} --port ${Number(hookPort)} --session ${q(sessionId)} --token ${q(hookToken)}`;
+      settings.hooks = {
+        PreToolUse: [
+          { matcher: 'ExitPlanMode', hooks: [{ type: 'command', command }] }
+        ]
+      };
+    }
+    return settings;
   }
 
   async sendInput(sessionId, data) {

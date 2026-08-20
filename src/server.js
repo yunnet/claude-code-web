@@ -208,6 +208,35 @@ class ClaudeCodeWebServer {
       }
     });
 
+    // Claude Code hook relay endpoint. bin/cc-hook.js (invoked by Claude via the
+    // hooks injected in claude-bridge) POSTs its event JSON here; we forward it
+    // over WebSocket to the session's browsers as a `hook_event`. Registered
+    // BEFORE the global auth middleware because it authenticates with a
+    // per-session hook token (not the global token, to shrink the leak surface)
+    // and only accepts loopback callers — the relay always runs on this host.
+    this.app.post('/api/hooks/:sessionId', (req, res) => {
+      const remote = req.socket.remoteAddress || '';
+      const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!isLoopback) return res.status(403).json({ error: 'Forbidden' });
+
+      const sessionId = req.params.sessionId;
+      const session = this.claudeSessions.get(sessionId);
+      if (!session || !session.hookToken) return res.status(404).json({ error: 'Unknown session' });
+      if (req.headers.authorization !== `Bearer ${session.hookToken}`) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const event = req.body || {};
+      this.broadcastToSession(sessionId, {
+        type: 'hook_event',
+        sessionId,
+        event: event.hook_event_name,
+        tool_name: event.tool_name,
+        tool_input: event.tool_input
+      });
+      res.json({ ok: true });
+    });
+
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
         const token = req.headers.authorization || req.query.token;
@@ -1002,10 +1031,19 @@ class ClaudeCodeWebServer {
 
     // Capture the session ID to avoid closure issues
     const sessionId = wsInfo.claudeSessionId;
-    
+
+    // Per-session secret for the hook relay endpoint. Generated once and reused
+    // across resumes so the injected hook command stays valid for the session.
+    if (!session.hookToken) session.hookToken = uuidv4();
+
     try {
       await this.claudeBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        // Wire the plan hook: Claude's ExitPlanMode PreToolUse event is relayed
+        // by bin/cc-hook.js back to /api/hooks/:sessionId and broadcast to the UI.
+        hookScript: path.join(__dirname, '..', 'bin', 'cc-hook.js'),
+        hookPort: this.port,
+        hookToken: session.hookToken,
         // Resume the Claude conversation if this cc-web session has started Claude
         // before (bound to this session id via --session-id). Survives server
         // restarts / dead PTYs instead of starting a brand-new conversation.

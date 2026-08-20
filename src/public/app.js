@@ -1227,11 +1227,6 @@ class ClaudeCodeWebInterface {
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, message.data);
                 }
-                
-                // Pass output to plan detector
-                if (this.planDetector) {
-                    this.planDetector.processOutput(message.data);
-                }
                 break;
                 
             case 'exit':
@@ -1275,6 +1270,16 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'pong':
+                break;
+
+            case 'hook_event':
+                // Structured Claude Code hook event relayed by the server. The
+                // ExitPlanMode PreToolUse event carries the full plan text —
+                // this replaces the old terminal-scraping plan detector.
+                if (message.tool_name === 'ExitPlanMode' &&
+                    message.tool_input && message.tool_input.plan) {
+                    this.showPlanModal({ content: message.tool_input.plan });
+                }
                 break;
 
             case 'usage_update':
@@ -2408,55 +2413,63 @@ class ClaudeCodeWebInterface {
     }
     
     setupPlanDetector() {
-        // Initialize plan detector
-        this.planDetector = new PlanDetector();
+        // Plan detection is now driven by structured Claude Code hook events
+        // (see the 'hook_event' WebSocket case) instead of scraping terminal
+        // output. This only wires the plan modal's buttons.
         this.planModal = document.getElementById('planModal');
-        
-        // Set up callbacks
-        this.planDetector.onPlanDetected = (plan) => {
-            this.showPlanModal(plan);
-        };
-        
-        this.planDetector.onPlanModeChange = (isActive) => {
-            this.updatePlanModeIndicator(isActive);
-        };
-        
-        // Set up modal buttons
+
         const acceptBtn = document.getElementById('acceptPlanBtn');
         const rejectBtn = document.getElementById('rejectPlanBtn');
         const closeBtn = document.getElementById('closePlanBtn');
-        
-        acceptBtn.addEventListener('click', () => this.acceptPlan());
-        rejectBtn.addEventListener('click', () => this.rejectPlan());
-        closeBtn.addEventListener('click', () => this.hidePlanModal());
-        
-        // Start monitoring
-        this.planDetector.startMonitoring();
+
+        if (acceptBtn) acceptBtn.addEventListener('click', () => this.acceptPlan());
+        if (rejectBtn) rejectBtn.addEventListener('click', () => this.rejectPlan());
+        if (closeBtn) closeBtn.addEventListener('click', () => this.hidePlanModal());
     }
     
     showPlanModal(plan) {
         const modal = document.getElementById('planModal');
         const content = document.getElementById('planContent');
-        
-        // Format the plan content
-        let formattedContent = plan.content;
-        
-        // Convert markdown to basic HTML for better display
-        formattedContent = formattedContent
-            .replace(/^### (.*?)$/gm, '<h3>$1</h3>')
-            .replace(/^## (.*?)$/gm, '<h2>$1</h2>')
-            .replace(/^- (.*?)$/gm, '• $1')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
-        
-        content.innerHTML = formattedContent;
+
+        content.innerHTML = this.renderPlanMarkdown(plan.content || '');
         modal.classList.add('active');
-        
+
         // Play a subtle notification sound (optional)
         this.playNotificationSound();
     }
     
+    // Render the plan markdown (from Claude's ExitPlanMode tool_input.plan) to
+    // safe HTML. HTML is escaped first (the text is model output), fenced code
+    // blocks are pulled out before inline formatting so their contents aren't
+    // mangled by the bold/italic/backtick passes, then headings and inline marks
+    // are applied to the prose. The container is `white-space: pre-wrap`, so
+    // line breaks are preserved without extra <br>/<p> wrapping.
+    renderPlanMarkdown(md) {
+        const esc = (s) => s
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        // 1) Extract fenced code blocks to placeholders (before escaping prose).
+        const blocks = [];
+        let text = md.replace(/```[^\n`]*\n?([\s\S]*?)```/g, (_, code) => {
+            const i = blocks.push(`<pre><code>${esc(code.replace(/\n$/, ''))}</code></pre>`) - 1;
+            return ` CB${i} `;
+        });
+
+        // 2) Escape the remaining prose, then apply block/inline markdown.
+        text = esc(text)
+            .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+            .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+            .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+        // 3) Restore the code blocks.
+        return text.replace(/ CB(\d+) /g, (_, i) => blocks[Number(i)]);
+    }
+
     hidePlanModal() {
         const modal = document.getElementById('planModal');
         modal.classList.remove('active');
@@ -2472,8 +2485,7 @@ class ClaudeCodeWebInterface {
         }
         
         this.hidePlanModal();
-        this.planDetector.clearBuffer();
-        
+
         // Show confirmation
         this.showNotification('Plan accepted! Claude will begin implementation.');
     }
@@ -2488,8 +2500,7 @@ class ClaudeCodeWebInterface {
         }
         
         this.hidePlanModal();
-        this.planDetector.clearBuffer();
-        
+
         // Show confirmation
         this.showNotification('Plan rejected. You can provide feedback to Claude.');
     }

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Plan mode approval now works on current Claude versions.** The plan modal was driven by `plan-detector.js`, which scraped terminal output for markers like `## Plan:`/`###`. Current Claude renders plan markdown to styled ANSI, so those markers never appear in the byte stream and the modal silently stopped firing (verified 0/9 markers matched on Claude Code 2.1.218).
+- **Plan modal markdown rendering.** The modal's ad-hoc regex mangled fenced code blocks (`` ``` ``) and didn't render `#` headings; plan text was also injected as HTML without escaping. Replaced with `renderPlanMarkdown()` which escapes HTML first, renders fenced code blocks as `<pre><code>` (protected from the inline bold/italic passes), and handles `#`/`##`/`###` headings, inline code, bold, and italics.
+
+### Changed
+- Plan detection now uses Claude Code's native hooks. `claude-bridge.js` injects a `PreToolUse(ExitPlanMode)` hook via `--settings`; `bin/cc-hook.js` relays the event (with the full `tool_input.plan`) to the new `POST /api/hooks/:sessionId` endpoint, which broadcasts it to the browser as a `hook_event`. The endpoint authenticates with a per-session token and only accepts loopback callers.
+
+### Removed
+- `src/public/plan-detector.js` (185 lines of terminal-scraping regex) and its `index.html` / `service-worker.js` references.
+
 ## [3.4.0] - 2025-10-23
 
 ### Added

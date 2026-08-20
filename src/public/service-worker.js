@@ -4,8 +4,7 @@ const urlsToCache = [
   '/index.html',
   '/style.css',
   '/app.js',
-  '/session-manager.js',
-  '/plan-detector.js'
+  '/session-manager.js'
 ];
 
 // Install event - cache resources
