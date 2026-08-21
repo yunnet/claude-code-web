@@ -2476,11 +2476,13 @@ class ClaudeCodeWebInterface {
     }
     
     acceptPlan() {
-        // Send acceptance to Claude
+        // Current Claude presents plan approval as a menu (❯1. Yes … / 2 / 3),
+        // not a y/n prompt. Enter selects the highlighted default ("Yes"), which
+        // approves the plan. (The old 'y\n' only worked by accident via the \n.)
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({
                 type: 'input',
-                data: 'y\n' // Send 'y' to accept the plan
+                data: '\r' // Enter → approve (select default menu item)
             }));
         }
         
@@ -2491,11 +2493,14 @@ class ClaudeCodeWebInterface {
     }
     
     rejectPlan() {
-        // Send rejection to Claude
+        // Reject = back out of the plan-approval menu. Escape cancels the menu
+        // and returns to plan mode (verified against Claude 2.1.218) without
+        // approving. (The old 'n\n' actually approved: 'n' isn't a menu key and
+        // the trailing newline selected the default "Yes".)
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({
                 type: 'input',
-                data: 'n\n' // Send 'n' to reject the plan
+                data: '\x1b' // Escape → cancel approval, stay in plan mode
             }));
         }
         

@@ -82,7 +82,10 @@ describe('ClaudeBridge', function() {
       assert(cmd.includes('/opt/app/bin/cc-hook.js'), 'command includes hook script path');
       assert(cmd.includes('--port 32353'), 'command includes port');
       assert(cmd.includes('sess-abc'), 'command includes session id');
-      assert(cmd.includes('tok-xyz'), 'command includes token');
+      // The token must NOT be on the command line — it travels via the
+      // CCWEB_HOOK_TOKEN env var so it can't leak through /proc/<pid>/cmdline.
+      assert(!cmd.includes('tok-xyz'), 'command must NOT include the hook token');
+      assert(!cmd.includes('--token'), 'command must NOT carry a --token flag');
     });
 
     it('should single-quote-escape argv to avoid shell injection', function() {

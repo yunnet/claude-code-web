@@ -84,11 +84,30 @@ class ClaudeCodeWebServer {
     this.autoSaveInterval = setInterval(() => {
       this.saveSessionsToDisk();
     }, 30000);
-    
-    // Also save on process exit
-    process.on('SIGINT', () => this.handleShutdown());
-    process.on('SIGTERM', () => this.handleShutdown());
-    process.on('beforeExit', () => this.saveSessionsToDisk());
+
+    // Also save on process exit. Keep references so dispose() can remove them:
+    // otherwise every server instance leaks these listeners, and the beforeExit
+    // handler (which does async I/O) re-arms the event loop forever, hanging any
+    // process that constructs a server without listening (e.g. the test run).
+    this._onSigint = () => this.handleShutdown();
+    this._onSigterm = () => this.handleShutdown();
+    this._onBeforeExit = () => this.saveSessionsToDisk();
+    process.on('SIGINT', this._onSigint);
+    process.on('SIGTERM', this._onSigterm);
+    process.on('beforeExit', this._onBeforeExit);
+  }
+
+  // Release the auto-save timer and the process listeners registered in
+  // setupAutoSave, so a disposed server no longer keeps the process alive.
+  dispose() {
+    if (this.autoSaveInterval) {
+      clearInterval(this.autoSaveInterval);
+      this.autoSaveInterval = null;
+    }
+    if (this._onSigint) process.removeListener('SIGINT', this._onSigint);
+    if (this._onSigterm) process.removeListener('SIGTERM', this._onSigterm);
+    if (this._onBeforeExit) process.removeListener('beforeExit', this._onBeforeExit);
+    this._onSigint = this._onSigterm = this._onBeforeExit = null;
   }
   
   async saveSessionsToDisk() {
@@ -214,33 +233,18 @@ class ClaudeCodeWebServer {
     // BEFORE the global auth middleware because it authenticates with a
     // per-session hook token (not the global token, to shrink the leak surface)
     // and only accepts loopback callers — the relay always runs on this host.
-    this.app.post('/api/hooks/:sessionId', (req, res) => {
-      const remote = req.socket.remoteAddress || '';
-      const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-      if (!isLoopback) return res.status(403).json({ error: 'Forbidden' });
-
-      const sessionId = req.params.sessionId;
-      const session = this.claudeSessions.get(sessionId);
-      if (!session || !session.hookToken) return res.status(404).json({ error: 'Unknown session' });
-      if (req.headers.authorization !== `Bearer ${session.hookToken}`) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-
-      const event = req.body || {};
-      this.broadcastToSession(sessionId, {
-        type: 'hook_event',
-        sessionId,
-        event: event.hook_event_name,
-        tool_name: event.tool_name,
-        tool_input: event.tool_input
-      });
-      res.json({ ok: true });
-    });
+    this.app.post('/api/hooks/:sessionId', (req, res) => this.handleHookEvent(req, res));
 
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
-        const token = req.headers.authorization || req.query.token;
-        if (token !== `Bearer ${this.auth}` && token !== this.auth) {
+        // Header-only: the token must not travel in the query string (it would
+        // leak into access logs, browser history, and Referer). All browser
+        // REST calls send the Authorization header; the page itself is served by
+        // express.static before this middleware; the WebSocket authenticates
+        // separately in verifyClient (browsers can't set headers on a WS, so it
+        // keeps its query token there).
+        const auth = req.headers.authorization;
+        if (auth !== `Bearer ${this.auth}` && auth !== this.auth) {
           return res.status(401).json({ error: 'Unauthorized' });
         }
         next();
@@ -1373,6 +1377,33 @@ class ClaudeCodeWebServer {
       if (session.flowResumeTimer) { clearTimeout(session.flowResumeTimer); session.flowResumeTimer = null; }
       this.resumeSessionPty(session);
     }
+  }
+
+  // Handle a Claude Code hook relay POST (from bin/cc-hook.js). Loopback-only,
+  // authenticated with the session's own hookToken, then rebroadcast to the
+  // session's browsers as a `hook_event`. Extracted from the route so it is
+  // unit-testable with mock req/res, without binding a socket.
+  handleHookEvent(req, res) {
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    if (!isLoopback) return res.status(403).json({ error: 'Forbidden' });
+
+    const sessionId = req.params.sessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || !session.hookToken) return res.status(404).json({ error: 'Unknown session' });
+    if (req.headers.authorization !== `Bearer ${session.hookToken}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const event = req.body || {};
+    this.broadcastToSession(sessionId, {
+      type: 'hook_event',
+      sessionId,
+      event: event.hook_event_name,
+      tool_name: event.tool_name,
+      tool_input: event.tool_input
+    });
+    res.json({ ok: true });
   }
 
   broadcastToSession(claudeSessionId, data) {

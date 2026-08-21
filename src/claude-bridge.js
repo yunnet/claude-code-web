@@ -117,6 +117,9 @@ class ClaudeBridge {
         // Persist transcripts so --resume can restore the conversation.
         CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: '1'
       };
+      // Hook relay token: inherited by the ExitPlanMode hook (cc-hook.js) via the
+      // environment instead of argv, so it doesn't leak through /proc/<pid>/cmdline.
+      if (hookToken) childEnv.CCWEB_HOOK_TOKEN = hookToken;
       delete childEnv.CLAUDE_CODE_CHILD_SESSION;
       return spawn(this.claudeCommand, [...idArgs, ...baseArgs], {
         cwd: workingDir,
@@ -252,8 +255,12 @@ class ClaudeBridge {
   buildInjectedSettings(sessionId, { hookScript = '', hookPort = 0, hookToken = '' } = {}) {
     const settings = { preferredNotifChannel: 'terminal_bell' };
     if (hookScript && hookPort && hookToken) {
+      // The token is passed to cc-hook.js via the CCWEB_HOOK_TOKEN env var (set
+      // on the spawned Claude, inherited by its hooks), NOT on the command line:
+      // argv is world-readable via /proc/<pid>/cmdline, whereas /proc/<pid>/environ
+      // is owner-only. port/session are non-secret and stay as argv.
       const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-      const command = `${q(process.execPath)} ${q(hookScript)} --port ${Number(hookPort)} --session ${q(sessionId)} --token ${q(hookToken)}`;
+      const command = `${q(process.execPath)} ${q(hookScript)} --port ${Number(hookPort)} --session ${q(sessionId)}`;
       settings.hooks = {
         PreToolUse: [
           { matcher: 'ExitPlanMode', hooks: [{ type: 'command', command }] }

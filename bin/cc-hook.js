@@ -17,7 +17,9 @@ function arg(name) {
 
 const port = arg('--port');
 const session = arg('--session');
-const token = arg('--token');
+// Token comes from the environment (set on the spawned Claude by claude-bridge),
+// not argv, so it isn't exposed via /proc/<pid>/cmdline.
+const token = process.env.CCWEB_HOOK_TOKEN;
 
 let body = '';
 let finished = false;

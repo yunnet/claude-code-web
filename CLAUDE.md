@@ -74,4 +74,4 @@ Claude presents a plan by calling the `ExitPlanMode` tool, which fires a `PreToo
 - Claude CLI discovery tries multiple paths including `~/.claude/local/claude`; each bridge falls back to a bare command name on PATH.
 - Output buffer keeps the last ~1000 lines per session for reconnection replay.
 - Terminal is `xterm-256color` with full ANSI + WebGL/canvas rendering addons.
-- Folder browser restricts access to the base directory and its subdirectories only (path-traversal guarded); auth is on by default (Bearer token or query param) with per-IP rate limiting.
+- Folder browser restricts access to the base directory and its subdirectories only (path-traversal guarded); auth is on by default with per-IP rate limiting. REST routes authenticate via the `Authorization` header only (no query token — it would leak into logs/history); the WebSocket still authenticates with a query token because browsers can't set headers on a WS.

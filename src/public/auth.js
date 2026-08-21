@@ -1,8 +1,31 @@
 // Authentication module for Claude Code Web
 class AuthManager {
     constructor() {
-        this.token = sessionStorage.getItem('cc-web-token');
+        // Always run consumeUrlToken first so a ?token=… in the URL is stripped
+        // even when a token is already stored (otherwise the secret would linger
+        // in the address bar / history). A URL token, being explicit, wins.
+        const urlToken = this.consumeUrlToken();
+        this.token = urlToken || sessionStorage.getItem('cc-web-token');
         this.authRequired = false;
+    }
+
+    // If the page was opened with ?token=… (a convenience/bookmark form), adopt
+    // it and immediately strip it from the URL via replaceState so the secret
+    // doesn't linger in browser history or leak via the Referer header.
+    consumeUrlToken() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const t = params.get('token');
+            if (!t) return null;
+            params.delete('token');
+            const qs = params.toString();
+            const url = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+            window.history.replaceState(null, '', url);
+            sessionStorage.setItem('cc-web-token', t);
+            return t;
+        } catch (_) {
+            return null;
+        }
     }
 
     async checkAuthStatus() {
