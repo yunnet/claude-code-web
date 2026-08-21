@@ -318,32 +318,11 @@ class ClaudeCodeWebInterface {
         this.terminal = new Terminal({
             fontSize: fontSize,
             fontFamily: 'JetBrains Mono, Fira Code, Monaco, Consolas, monospace',
-            theme: {
-                background: 'transparent',
-                foreground: '#f0f6fc',
-                cursor: '#58a6ff',
-                cursorAccent: '#0d1117',
-                // xterm 5.x renamed `selection` -> `selectionBackground`; the old
-                // key is ignored, which left selections invisible (looked un-copyable).
-                selectionBackground: 'rgba(88, 166, 255, 0.35)',
-                selectionForeground: '#0d1117',
-                black: '#484f58',
-                red: '#ff7b72',
-                green: '#7ee787',
-                yellow: '#ffa657',
-                blue: '#79c0ff',
-                magenta: '#d2a8ff',
-                cyan: '#a5f3fc',
-                white: '#b1bac4',
-                brightBlack: '#6e7681',
-                brightRed: '#ffa198',
-                brightGreen: '#56d364',
-                brightYellow: '#ffdf5d',
-                brightBlue: '#79c0ff',
-                brightMagenta: '#d2a8ff',
-                brightCyan: '#a5f3fc',
-                brightWhite: '#f0f6fc'
-            },
+            // Theme-aware palette (light/dark) from splits.js:getTerminalTheme(),
+            // which loads before app.js. Selects by the `data-theme` attribute set
+            // synchronously in <head>, so the terminal matches the UI theme. The
+            // dark palette is identical to the original hardcoded one.
+            theme: getTerminalTheme(),
             allowProposedApi: true,
             scrollback: 10000,
             rightClickSelectsWord: false,
@@ -385,6 +364,9 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+
+        // Make plan-file paths in output clickable (open the .md in a new tab).
+        registerPlanLinks(this.terminal);
 
         // Renderer (must load after open()). Prefer WebGL — it's markedly faster
         // than canvas/DOM under Claude Code's heavy full-screen repaints, which is

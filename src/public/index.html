@@ -30,11 +30,14 @@
       (function() {
         try {
           const s = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+          const meta = document.querySelector('meta[name="theme-color"]');
           if (s && s.theme === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
+            if (meta) meta.setAttribute('content', '#ffffff');
           } else {
             // Dark is default — ensure no 'light' override is set
             document.documentElement.removeAttribute('data-theme');
+            if (meta) meta.setAttribute('content', '#161b22');
           }
         } catch (_) { /* ignore */ }
       })();
@@ -356,6 +359,39 @@
     <script src="icons.js"></script>
     <script src="app.js"></script>
     
+    <!-- Theme controls: persist the Settings theme choice and reload so both the
+         CSS chrome and the xterm terminal (whose theme is read at creation) apply
+         it consistently. The Settings modal's Save button was previously unwired. -->
+    <script>
+      (function() {
+        function readSettings() {
+          try { return JSON.parse(localStorage.getItem('cc-web-settings') || '{}'); }
+          catch (_) { return {}; }
+        }
+        function initThemeControls() {
+          const sel = document.getElementById('themeSelect');
+          const save = document.getElementById('saveSettingsBtn');
+          if (sel) sel.value = readSettings().theme === 'light' ? 'light' : 'dark';
+          if (save) {
+            save.addEventListener('click', function() {
+              const theme = (sel && sel.value === 'light') ? 'light' : 'dark';
+              const s = readSettings();
+              if (s.theme === theme) return; // no change → let other handlers run
+              s.theme = theme;
+              localStorage.setItem('cc-web-settings', JSON.stringify(s));
+              // Reload so the early theme script + terminal creation both pick it up.
+              window.location.reload();
+            });
+          }
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', initThemeControls);
+        } else {
+          initThemeControls();
+        }
+      })();
+    </script>
+
     <!-- Service Worker Registration -->
     <script>
         if ('serviceWorker' in navigator) {

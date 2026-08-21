@@ -3,6 +3,86 @@
  * Manages up to 2 terminal panes side-by-side with independent terminals
  */
 
+// xterm terminal theme, chosen from the active app theme (`data-theme`), which
+// is set synchronously in <head> before this script runs. The terminal renders
+// its own background via this JS theme (not CSS), so without this the terminal
+// stayed dark in light mode. The light palette is tuned to read on white
+// (GitHub-Light-style ANSI colors); the dark palette matches the previous one.
+function getTerminalTheme() {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    if (isLight) {
+        // GitHub-Light-style palette: solid white bg with dark, high-contrast
+        // ANSI colors that read on white. (A transparent bg renders opaque dark
+        // under the canvas renderer, so light mode must set a solid background.)
+        return {
+            background: '#ffffff',
+            foreground: '#1f2328',
+            cursor: '#0969da',
+            cursorAccent: '#ffffff',
+            selectionBackground: 'rgba(9, 105, 218, 0.20)',
+            selectionForeground: '#ffffff',
+            black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#9a6700',
+            blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
+            brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#633c01',
+            brightBlue: '#218bff', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f'
+        };
+    }
+    // Dark palette — identical to the original main-terminal theme (solid bg).
+    return {
+        background: '#0d1117',
+        foreground: '#f0f6fc',
+        cursor: '#58a6ff',
+        cursorAccent: '#0d1117',
+        selectionBackground: 'rgba(88, 166, 255, 0.35)',
+        selectionForeground: '#0d1117',
+        black: '#484f58', red: '#ff7b72', green: '#7ee787', yellow: '#ffa657',
+        blue: '#79c0ff', magenta: '#d2a8ff', cyan: '#a5f3fc', white: '#b1bac4',
+        brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#ffdf5d',
+        brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#a5f3fc', brightWhite: '#f0f6fc'
+    };
+}
+
+// Make development-plan paths (…/.claude/plans/*.md) in terminal output clickable.
+// Clicking opens the plan markdown in a new browser tab via GET /api/plan, so the
+// user can review it (e.g. with a browser markdown extension). Shared by the main
+// terminal (app.js) and split terminals. Read-only: it inspects buffer text to
+// place links and never writes to the PTY stream.
+function registerPlanLinks(term) {
+    if (!term || typeof term.registerLinkProvider !== 'function') return;
+    // Paths containing `.claude/plans/` and ending in `.md` (relative or absolute).
+    const RE = /[^\s"'`()]*\.claude\/plans\/[^\s"'`()]+\.md/g;
+    term.registerLinkProvider({
+        provideLinks(lineNumber, callback) {
+            const line = term.buffer.active.getLine(lineNumber - 1);
+            if (!line) { callback(undefined); return; }
+            const text = line.translateToString(true);
+            const links = [];
+            let m;
+            RE.lastIndex = 0;
+            while ((m = RE.exec(text)) !== null) {
+                const matched = m[0];
+                const startX = m.index + 1; // xterm columns are 1-based
+                links.push({
+                    range: {
+                        start: { x: startX, y: lineNumber },
+                        end: { x: startX + matched.length - 1, y: lineNumber }
+                    },
+                    text: matched,
+                    activate() {
+                        try {
+                            const url = (window.authManager && window.authManager.getPlanUrl)
+                                ? window.authManager.getPlanUrl(matched)
+                                : `/api/plan?path=${encodeURIComponent(matched)}`;
+                            window.open(url, '_blank', 'noopener');
+                        } catch (_) { /* ignore */ }
+                    }
+                });
+            }
+            callback(links.length ? links : undefined);
+        }
+    });
+}
+
 class Split {
     constructor(container, index, app) {
         this.container = container;
@@ -46,13 +126,7 @@ class Split {
             smoothScrollDuration: 100,
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
-            theme: this.app?.terminal?.options?.theme || {
-                background: '#0d1117',
-                foreground: '#c9d1d9',
-                cursor: '#58a6ff',
-                selectionBackground: 'rgba(88, 166, 255, 0.35)',
-                selectionForeground: '#0d1117'
-            }
+            theme: this.app?.terminal?.options?.theme || getTerminalTheme()
         });
         
         this.fitAddon = new FitAddon.FitAddon();
@@ -72,6 +146,9 @@ class Split {
         }
 
         this.terminal.open(terminalDiv);
+
+        // Make plan-file paths in output clickable (open the .md in a new tab).
+        registerPlanLinks(this.terminal);
 
         // Canvas renderer (match main terminal), with DOM fallback.
         try {

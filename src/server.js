@@ -235,6 +235,12 @@ class ClaudeCodeWebServer {
     // and only accepts loopback callers — the relay always runs on this host.
     this.app.post('/api/hooks/:sessionId', (req, res) => this.handleHookEvent(req, res));
 
+    // Serve a development-plan markdown file so the terminal's plan links can open
+    // it in a new browser tab. Registered BEFORE the global auth middleware because
+    // opening a tab is a browser navigation that can't send an Authorization header
+    // — so, like the WebSocket, it authenticates with a query token (still required).
+    this.app.get('/api/plan', (req, res) => this.servePlanFile(req, res));
+
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
         // Header-only: the token must not travel in the query string (it would
@@ -1404,6 +1410,57 @@ class ClaudeCodeWebServer {
       tool_input: event.tool_input
     });
     res.json({ ok: true });
+  }
+
+  // Serve a plan markdown file for GET /api/plan?path=&token=. Extracted so it is
+  // unit-testable with mock req/res. Security: query-token auth (still required),
+  // and a strict allow-list — the resolved real path must be a `.md` inside a
+  // `.claude/plans/` directory under an allowed root (the base folder or an active
+  // session's working dir). realpath() resolves symlinks so links can't escape.
+  servePlanFile(req, res) {
+    if (!this.noAuth && this.auth) {
+      const token = req.query.token;
+      if (token !== `Bearer ${this.auth}` && token !== this.auth) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
+    const raw = req.query.path;
+    if (typeof raw !== 'string' || raw.length === 0 || raw.indexOf('\0') !== -1) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    // Allowed roots: the base folder plus every active session's working dir.
+    const roots = [this.baseFolder];
+    for (const s of this.claudeSessions.values()) {
+      if (s && s.workingDir) roots.push(s.workingDir);
+    }
+    const realRoots = [];
+    for (const r of roots) {
+      try { realRoots.push(fs.realpathSync(r)); } catch (_) { /* skip unreadable root */ }
+    }
+
+    const PLANS_SEGMENT = `${path.sep}.claude${path.sep}plans${path.sep}`;
+    const candidates = path.isAbsolute(raw) ? [raw] : roots.map((r) => path.join(r, raw));
+    for (const cand of candidates) {
+      try {
+        const real = fs.realpathSync(cand);
+        if (!real.endsWith('.md')) continue;
+        if (real.indexOf(PLANS_SEGMENT) === -1) continue;
+        const underRoot = realRoots.some((rr) => real === rr || real.startsWith(rr + path.sep));
+        if (!underRoot) continue;
+        const stat = fs.statSync(real);
+        if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
+        const content = fs.readFileSync(real);
+        res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // RFC 5987: filename* percent-encodes UTF-8 so non-ASCII plan names (e.g.
+        // Chinese) don't throw — a raw non-latin1 header value makes setHeader throw.
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(path.basename(real))}`);
+        return res.send(content);
+      } catch (_) { /* try the next candidate */ }
+    }
+    return res.status(404).json({ error: 'Not found' });
   }
 
   broadcastToSession(claudeSessionId, data) {

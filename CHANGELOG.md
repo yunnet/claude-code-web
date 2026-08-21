@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Clickable plan links in the terminal.** Development-plan paths (`…/.claude/plans/*.md`) in terminal output are now clickable and open the markdown in a new browser tab via `GET /api/plan` (e.g. for a browser markdown extension). The endpoint authenticates with a query token (a new-tab navigation can't send a header, like the WebSocket) and strictly allow-lists the resolved real path to a `.md` under a `.claude/plans/` directory inside the base folder or an active session's working dir. Non-ASCII plan filenames use an RFC 5987 `filename*` Content-Disposition.
+
 ### Fixed
 - **Plan mode approval now works on current Claude versions.** The plan modal was driven by `plan-detector.js`, which scraped terminal output for markers like `## Plan:`/`###`. Current Claude renders plan markdown to styled ANSI, so those markers never appear in the byte stream and the modal silently stopped firing (verified 0/9 markers matched on Claude Code 2.1.218).
 - **Plan modal markdown rendering.** The modal's ad-hoc regex mangled fenced code blocks (`` ``` ``) and didn't render `#` headings; plan text was also injected as HTML without escaping. Replaced with `renderPlanMarkdown()` which escapes HTML first, renders fenced code blocks as `<pre><code>` (protected from the inline bold/italic passes), and handles `#`/`##`/`###` headings, inline code, bold, and italics.

@@ -224,6 +224,15 @@ class AuthManager {
         return `${baseUrl}${separator}token=${encodeURIComponent(this.token)}`;
     }
 
+    // URL for GET /api/plan to open a plan .md in a new tab. The token rides the
+    // query string because a new-tab navigation can't send an Authorization
+    // header (server-side /api/plan authenticates from the query for this reason).
+    getPlanUrl(planPath) {
+        let url = `/api/plan?path=${encodeURIComponent(planPath)}`;
+        if (this.token) url += `&token=${encodeURIComponent(this.token)}`;
+        return url;
+    }
+
     logout() {
         this.token = null;
         sessionStorage.removeItem('cc-web-token');
