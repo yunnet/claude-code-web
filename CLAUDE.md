@@ -32,7 +32,7 @@ npx mocha test/session-store.test.js
 npx mocha test/*.test.js --grep "persistence"
 ```
 
-Default port is **32352**. Local convention: the **stable** instance runs on **32352** (a live user session — don't edit/restart it) and the **dev** instance on **32353** (edit here). Full flag list lives in `bin/cc-web.js` (`--plan`, `--claude-alias`/`--codex-alias`/`--agent-alias`, `--ngrok-auth-token`/`--ngrok-domain`, `--disable-auth`).
+Default port is **32352**. Local convention: the **stable** instance runs on **32352** (a live user session — don't edit/restart it) and the **dev** instance on **32353** (edit here). Full flag list lives in `bin/cc-web.js` (`--plan`, `--claude-alias`/`--codex-alias`/`--agent-alias`, `--ngrok-auth-token`/`--ngrok-domain`, `--plans-dir`, `--disable-auth`).
 
 ## Architecture
 
@@ -75,4 +75,12 @@ Claude presents a plan by calling the `ExitPlanMode` tool, which fires a `PreToo
 - Output buffer keeps the last ~1000 lines per session for reconnection replay.
 - Terminal is `xterm-256color` with full ANSI + WebGL/canvas rendering addons.
 - Folder browser restricts access to the base directory and its subdirectories only (path-traversal guarded); auth is on by default with per-IP rate limiting. REST routes authenticate via the `Authorization` header only (no query token — it would leak into logs/history); the WebSocket still authenticates with a query token because browsers can't set headers on a WS.
-- `GET /api/plan?path=&token=` serves a development-plan markdown file so the terminal's plan links (`registerPlanLinks` in `splits.js`) can open it in a new tab. It's the same browser-navigation exception as the WebSocket, so it authenticates with a query token; the resolved real path is strictly allow-listed to a `.md` under a `.claude/plans/` directory inside the base folder or an active session's working dir (realpath'd, so symlinks can't escape). Non-ASCII (e.g. Chinese) plan names use an RFC 5987 `filename*` header — a raw non-latin1 header value throws.
+- `GET /api/plan` serves a development-plan markdown file so the terminal's plan links (`registerPlanLinks` in `splits.js`) can open it in a new tab. It's the same browser-navigation exception as the WebSocket, so it authenticates with a token in the URL (not a header). Two URL forms hit the same `servePlanFile`:
+  - **Path form** (what the client builds): `/api/plan/<token>/<percent-encoded-path>` — the plan path is one segment (slashes as `%2F`) so the URL *ends in `.md`* with no query string. Browser Markdown extensions (Markdown Reader etc.) trigger on URLs ending in `.md`, so this makes them render the plan. `-` is a placeholder token in no-auth mode.
+  - **Query form** (backward-compatible): `/api/plan?path=&token=`.
+
+  The response is `Content-Type: text/plain` (not `text/markdown`: Chrome has no native markdown viewer and would *download* `text/markdown` instead of rendering a page the extension can transform). The resolved real path is strictly allow-listed and always realpath'd (so symlinks/`..` can't escape) and capped at 2 MB `.md`. Which directories are allowed depends on config:
+  - **Default** (no `--plans-dir`): a `.md` under a `.claude/plans/` directory inside the base folder or an active session's working dir.
+  - **Override** (`--plans-dir <paths>`, comma-separated, or env `CCW_PLANS_DIR`): *only* files under the configured directories are served, and the `.claude/plans/` path segment is **not** required (the operator opted these dirs in, so any name works). This lets plans live outside the served project — e.g. a meta-repo's `.claude/plans/` that isn't under any session's working dir. When set it fully replaces the default auto-discovery.
+
+  Non-ASCII (e.g. Chinese) plan names use an RFC 5987 `filename*` header — a raw non-latin1 header value throws.

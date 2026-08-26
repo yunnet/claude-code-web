@@ -26,6 +26,7 @@ program
   .option('--agent-alias <name>', 'display alias for Agent (default: env AGENT_ALIAS or "Cursor")')
   .option('--ngrok-auth-token <token>', 'ngrok auth token to open a public tunnel')
   .option('--ngrok-domain <domain>', 'ngrok reserved domain to use for the tunnel')
+  .option('--plans-dir <paths>', 'comma-separated plan directories for /api/plan links; when set, only these dirs are served (overrides the default project .claude/plans auto-discovery). Env: CCW_PLANS_DIR')
   .parse();
 
 const options = program.opts();
@@ -75,6 +76,13 @@ async function main() {
       claudeAlias: options.claudeAlias || process.env.CLAUDE_ALIAS || 'Claude',
       codexAlias: options.codexAlias || process.env.CODEX_ALIAS || 'Codex',
       agentAlias: options.agentAlias || process.env.AGENT_ALIAS || 'Cursor',
+      // Explicit plan directories for /api/plan (comma-separated). Overrides the
+      // default project .claude/plans auto-discovery when set.
+      planDirs: (options.plansDir || process.env.CCW_PLANS_DIR || '')
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => path.resolve(p)),
       folderMode: true // Always use folder mode
     };
 
@@ -83,6 +91,9 @@ async function main() {
     console.log('Mode: Folder selection mode');
     console.log(`Plan: ${options.plan}`);
     console.log(`Aliases: Claude → "${serverOptions.claudeAlias}", Codex → "${serverOptions.codexAlias}", Agent → "${serverOptions.agentAlias}"`);
+    if (serverOptions.planDirs.length) {
+      console.log(`Plan dirs (override): ${serverOptions.planDirs.join(', ')}`);
+    }
     
     // Display authentication status prominently
     if (noAuth) {

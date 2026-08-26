@@ -224,13 +224,15 @@ class AuthManager {
         return `${baseUrl}${separator}token=${encodeURIComponent(this.token)}`;
     }
 
-    // URL for GET /api/plan to open a plan .md in a new tab. The token rides the
-    // query string because a new-tab navigation can't send an Authorization
-    // header (server-side /api/plan authenticates from the query for this reason).
+    // URL to open a plan .md in a new tab. Uses the path form
+    // `/api/plan/<token>/<encoded-path>` so the URL *ends in `.md`* (the plan
+    // path is one percent-encoded segment, slashes as %2F, and there's no query
+    // string) — that's what browser Markdown extensions trigger on. The token
+    // rides the path because a new-tab navigation can't send an Authorization
+    // header. `-` is a placeholder token for the no-auth case (server ignores it).
     getPlanUrl(planPath) {
-        let url = `/api/plan?path=${encodeURIComponent(planPath)}`;
-        if (this.token) url += `&token=${encodeURIComponent(this.token)}`;
-        return url;
+        const token = this.token ? encodeURIComponent(this.token) : '-';
+        return `/api/plan/${token}/${encodeURIComponent(planPath)}`;
     }
 
     logout() {

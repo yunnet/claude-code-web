@@ -26,6 +26,10 @@ class ClaudeCodeWebServer {
     this.folderMode = options.folderMode !== false; // Default to true
     this.selectedWorkingDir = null;
     this.baseFolder = process.cwd(); // The folder where the app runs from
+    // Explicit plan directories for GET /api/plan. When non-empty they OVERRIDE
+    // the default (auto-discovered `<project>/.claude/plans`): only files under
+    // these dirs are served, and the `.claude/plans` path segment isn't required.
+    this.planDirs = (options.planDirs || []).map((p) => path.resolve(p));
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -240,6 +244,12 @@ class ClaudeCodeWebServer {
     // opening a tab is a browser navigation that can't send an Authorization header
     // — so, like the WebSocket, it authenticates with a query token (still required).
     this.app.get('/api/plan', (req, res) => this.servePlanFile(req, res));
+    // Plugin-friendly variant: the URL ends in `.md` (the plan path is the last
+    // segment, the token is a path segment, no query string) so browser Markdown
+    // extensions — which trigger on URLs ending in `.md` — activate on it. The
+    // plan path is a single percent-encoded segment (slashes as %2F); Express
+    // decodes it back before servePlanFile resolves it.
+    this.app.get('/api/plan/:token/:file', (req, res) => this.servePlanFile(req, res));
 
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
@@ -1418,22 +1428,33 @@ class ClaudeCodeWebServer {
   // `.claude/plans/` directory under an allowed root (the base folder or an active
   // session's working dir). realpath() resolves symlinks so links can't escape.
   servePlanFile(req, res) {
+    // Token and path come from either the query (`?path=&token=`) or the
+    // plugin-friendly path form (`/api/plan/:token/:file`). Express has already
+    // decoded the path params.
+    const params = req.params || {};
     if (!this.noAuth && this.auth) {
-      const token = req.query.token;
+      const token = params.token !== undefined ? params.token : req.query.token;
       if (token !== `Bearer ${this.auth}` && token !== this.auth) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
     }
 
-    const raw = req.query.path;
+    const raw = params.file !== undefined ? params.file : req.query.path;
     if (typeof raw !== 'string' || raw.length === 0 || raw.indexOf('\0') !== -1) {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    // Allowed roots: the base folder plus every active session's working dir.
-    const roots = [this.baseFolder];
-    for (const s of this.claudeSessions.values()) {
-      if (s && s.workingDir) roots.push(s.workingDir);
+    // Allowed roots. If explicit plan dirs are configured they OVERRIDE the
+    // default: only files under them are served and the `.claude/plans` segment
+    // isn't required (the operator opted these dirs in). Otherwise fall back to
+    // the base folder plus every active session's working dir, still requiring a
+    // `.claude/plans` segment so we don't serve arbitrary `.md` files.
+    const overridden = this.planDirs.length > 0;
+    const roots = overridden ? this.planDirs.slice() : [this.baseFolder];
+    if (!overridden) {
+      for (const s of this.claudeSessions.values()) {
+        if (s && s.workingDir) roots.push(s.workingDir);
+      }
     }
     const realRoots = [];
     for (const r of roots) {
@@ -1446,13 +1467,16 @@ class ClaudeCodeWebServer {
       try {
         const real = fs.realpathSync(cand);
         if (!real.endsWith('.md')) continue;
-        if (real.indexOf(PLANS_SEGMENT) === -1) continue;
+        if (!overridden && real.indexOf(PLANS_SEGMENT) === -1) continue;
         const underRoot = realRoots.some((rr) => real === rr || real.startsWith(rr + path.sep));
         if (!underRoot) continue;
         const stat = fs.statSync(real);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
         const content = fs.readFileSync(real);
-        res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+        // text/plain (not text/markdown): Chrome has no native markdown viewer,
+        // so text/markdown gets downloaded rather than rendered as a page —
+        // browser Markdown extensions can only transform a rendered text page.
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         // RFC 5987: filename* percent-encodes UTF-8 so non-ASCII plan names (e.g.
         // Chinese) don't throw — a raw non-latin1 header value makes setHeader throw.

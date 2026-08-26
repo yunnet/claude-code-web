@@ -50,7 +50,11 @@ function getTerminalTheme() {
 function registerPlanLinks(term) {
     if (!term || typeof term.registerLinkProvider !== 'function') return;
     // Paths containing `.claude/plans/` and ending in `.md` (relative or absolute).
-    const RE = /[^\s"'`()]*\.claude\/plans\/[^\s"'`()]+\.md/g;
+    // The leading segment is restricted to path-legal ASCII so a label glued to
+    // the path (e.g. `路径：/…/plans/x.md` or `path:/…/plans/x.md`) doesn't get
+    // swallowed into the match; the tail stays permissive so non-ASCII (Chinese)
+    // plan filenames still match.
+    const RE = /[A-Za-z0-9._~/-]*\.claude\/plans\/[^\s"'`()]+\.md/g;
     term.registerLinkProvider({
         provideLinks(lineNumber, callback) {
             const line = term.buffer.active.getLine(lineNumber - 1);
@@ -72,7 +76,7 @@ function registerPlanLinks(term) {
                         try {
                             const url = (window.authManager && window.authManager.getPlanUrl)
                                 ? window.authManager.getPlanUrl(matched)
-                                : `/api/plan?path=${encodeURIComponent(matched)}`;
+                                : `/api/plan/-/${encodeURIComponent(matched)}`;
                             window.open(url, '_blank', 'noopener');
                         } catch (_) { /* ignore */ }
                     }
