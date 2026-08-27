@@ -108,10 +108,9 @@
                 </div>
             </div>
             <div class="tab-actions">
-                <button class="tab-settings" id="settingsBtn" title="Settings">
+                <button class="tab-settings" id="explorerBtn" title="Files" aria-label="Open file explorer">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/>
+                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
                 </svg>
                 </button>
             </div>
@@ -130,6 +129,7 @@
                 <button id="clearBtnMobile" class="mobile-menu-btn">Clear Terminal</button>
                 <button id="settingsBtnMobile" class="mobile-menu-btn">Settings</button>
             </div>
+            <div class="mobile-menu-footer" id="menuVersion" title="version · port · build id (same build id = same code on both instances)">—</div>
         </div>
 
         <main class="main">
@@ -209,6 +209,20 @@
                     <div class="setting-group">
                         <label for="showTokenStats">Show Token Stats:</label>
                         <input type="checkbox" id="showTokenStats" checked>
+                    </div>
+                    <div class="setting-group">
+                        <label for="smoothScroll">Scroll animation:</label>
+                        <input type="range" id="smoothScroll" min="0" max="200" step="10" value="100" title="0 = instant (snappiest); higher = smoother/heavier wheel scroll">
+                        <span id="smoothScrollValue">100ms</span>
+                    </div>
+                    <div class="setting-group setting-group-block">
+                        <label>Plan directories:</label>
+                        <p class="setting-hint" id="planDirsHint">The current project's <code>.claude/plans</code> is always available. Add extra directories to serve plans from other projects.</p>
+                        <div class="plan-dirs-list" id="planDirsList"></div>
+                        <div class="plan-dirs-add">
+                            <input type="text" id="planDirInput" placeholder="/path/to/project/.claude/plans" spellcheck="false" autocomplete="off">
+                            <button class="btn btn-secondary btn-small" id="planDirAddBtn">Add</button>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -334,6 +348,44 @@
                 </div>
             </div>
         </div>
+
+        <!-- Read-only file/folder explorer (Windows-Explorer style). Reuses the
+             folder-browser CSS. Double-click a folder to enter; click a file to
+             open it in a new tab via /api/fs/file. -->
+        <div class="folder-browser-modal" id="fileExplorerModal">
+            <div class="modal-content folder-browser-content">
+                <div class="modal-header">
+                    <h2>Files</h2>
+                    <button class="close-menu-btn" id="explorerCloseBtn" title="Close">&times;</button>
+                </div>
+                <div class="folder-browser-body">
+                    <div class="folder-path-bar">
+                        <button class="btn-icon" id="explorerUpBtn" title="Go to parent directory">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 12H5M12 19l-7-7 7-7"/>
+                            </svg>
+                        </button>
+                        <button class="btn-icon" id="explorerHomeBtn" title="Go to home directory">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                            </svg>
+                        </button>
+                        <input type="text" class="folder-path-input" id="explorerPathInput" placeholder="Type a path and press Enter" spellcheck="false" autocomplete="off">
+                    </div>
+                    <div class="folder-list-container">
+                        <div class="folder-list" id="explorerList">
+                            <!-- Files and folders are rendered here -->
+                        </div>
+                    </div>
+                    <div class="folder-browser-footer">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="explorerShowHidden">
+                            Show hidden items
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Mobile Sessions Modal -->
@@ -356,6 +408,7 @@
     <script src="auth.js"></script>
     <script src="session-manager.js"></script>
     <script src="splits.js"></script>
+    <script src="file-explorer.js"></script>
     <script src="icons.js"></script>
     <script src="app.js"></script>
     

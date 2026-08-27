@@ -92,7 +92,7 @@ async function main() {
     console.log(`Plan: ${options.plan}`);
     console.log(`Aliases: Claude → "${serverOptions.claudeAlias}", Codex → "${serverOptions.codexAlias}", Agent → "${serverOptions.agentAlias}"`);
     if (serverOptions.planDirs.length) {
-      console.log(`Plan dirs (override): ${serverOptions.planDirs.join(', ')}`);
+      console.log(`Plan dirs (seed, additive to auto-discovery): ${serverOptions.planDirs.join(', ')}`);
     }
     
     // Display authentication status prominently

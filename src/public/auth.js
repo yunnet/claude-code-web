@@ -235,6 +235,13 @@ class AuthManager {
         return `/api/plan/${token}/${encodeURIComponent(planPath)}`;
     }
 
+    // URL to open an arbitrary file (the file explorer) in a new tab, same path
+    // form as getPlanUrl so the URL ends in the file's real extension.
+    getFileUrl(filePath) {
+        const token = this.token ? encodeURIComponent(this.token) : '-';
+        return `/api/fs/file/${token}/${encodeURIComponent(filePath)}`;
+    }
+
     logout() {
         this.token = null;
         sessionStorage.removeItem('cc-web-token');

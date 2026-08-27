@@ -126,8 +126,11 @@ class Split {
             macOptionIsMeta: true,
             // Match the main terminal's scrollback (default is only 1000).
             scrollback: 10000,
-            // Match the main terminal's scroll feel.
-            smoothScrollDuration: 100,
+            // Match the main terminal's scroll feel (user-configurable via
+            // Settings; instant on mobile). Falls back to 100 if unavailable.
+            smoothScrollDuration: (this.app && this.app.isMobile)
+                ? 0
+                : (this.app?.loadSettings?.().smoothScrollDuration ?? 100),
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
             theme: this.app?.terminal?.options?.theme || getTerminalTheme()

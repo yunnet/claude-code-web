@@ -153,6 +153,16 @@ class ClaudeCodeWebInterface {
                 if (cfg.homeDir) {
                     this.homeDir = cfg.homeDir;
                 }
+                // Build/version marker in the left drawer footer, so dev (32353)
+                // and stable (32352) can be told apart and compared at a glance.
+                const vEl = document.getElementById('menuVersion');
+                if (vEl) {
+                    const parts = [];
+                    if (cfg.version) parts.push('v' + cfg.version);
+                    if (cfg.port) parts.push(':' + cfg.port);
+                    if (cfg.buildId) parts.push(cfg.buildId);
+                    vEl.textContent = parts.length ? parts.join(' · ') : '—';
+                }
             }
         } catch (_) { /* best-effort */ }
     }
@@ -335,8 +345,9 @@ class ClaudeCodeWebInterface {
             // Native-terminal scroll feel: animate wheel scrolls on desktop.
             // On mobile keep it instant (0) — the touch handler drives scrolling
             // itself with its own inertia, and animating each step there makes the
-            // viewport lag behind the finger.
-            smoothScrollDuration: isMobile ? 0 : 100,
+            // viewport lag behind the finger. Desktop value is user-configurable
+            // via Settings (0 = instant / no damping).
+            smoothScrollDuration: isMobile ? 0 : this.loadSettings().smoothScrollDuration,
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
@@ -844,7 +855,7 @@ class ClaudeCodeWebInterface {
         const startCodexBtn = document.getElementById('startCodexBtn');
         const dangerousCodexBtn = document.getElementById('dangerousCodexBtn');
         const startAgentBtn = document.getElementById('startAgentBtn');
-        const settingsBtn = document.getElementById('settingsBtn');
+        const explorerBtn = document.getElementById('explorerBtn');
         const retryBtn = document.getElementById('retryBtn');
         
         // Mobile menu buttons (keeping for mobile support)
@@ -856,7 +867,10 @@ class ClaudeCodeWebInterface {
         if (startCodexBtn) startCodexBtn.addEventListener('click', () => this.startCodexSession());
         if (dangerousCodexBtn) dangerousCodexBtn.addEventListener('click', () => this.startCodexSession({ dangerouslySkipPermissions: true }));
         if (startAgentBtn) startAgentBtn.addEventListener('click', () => this.startAgentSession());
-        if (settingsBtn) settingsBtn.addEventListener('click', () => this.showSettings());
+        // Desktop file-explorer button (replaced the old Settings gear; Settings
+        // stays reachable from the hamburger menu). The explorer lives in
+        // file-explorer.js and exposes window.fileExplorer.
+        if (explorerBtn) explorerBtn.addEventListener('click', () => window.fileExplorer && window.fileExplorer.open());
         if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
 
         // Tile view toggle
@@ -901,6 +915,28 @@ class ClaudeCodeWebInterface {
         
         fontSizeSlider.addEventListener('input', (e) => {
             fontSizeValue.textContent = e.target.value + 'px';
+        });
+
+        const smoothScroll = document.getElementById('smoothScroll');
+        const smoothScrollValue = document.getElementById('smoothScrollValue');
+        if (smoothScroll) {
+            smoothScroll.addEventListener('input', (e) => {
+                smoothScrollValue.textContent = e.target.value + 'ms';
+            });
+        }
+
+        // Plan directories: add on button click / Enter. Removal is delegated
+        // from the list (each row's × has data-dir). Both POST immediately.
+        const planDirAddBtn = document.getElementById('planDirAddBtn');
+        const planDirInput = document.getElementById('planDirInput');
+        if (planDirAddBtn) planDirAddBtn.addEventListener('click', () => this.addPlanDir());
+        if (planDirInput) planDirInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); this.addPlanDir(); }
+        });
+        const planDirsList = document.getElementById('planDirsList');
+        if (planDirsList) planDirsList.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-remove-dir]');
+            if (btn) this.removePlanDir(btn.getAttribute('data-remove-dir'));
         });
 
         modal.addEventListener('click', (e) => {
@@ -1625,22 +1661,115 @@ class ClaudeCodeWebInterface {
         const themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
+        const ss = document.getElementById('smoothScroll');
+        if (ss) {
+            ss.value = settings.smoothScrollDuration;
+            document.getElementById('smoothScrollValue').textContent = settings.smoothScrollDuration + 'ms';
+        }
+        this.loadPlanDirsUI();
     }
 
     hideSettings() {
         document.getElementById('settingsModal').classList.remove('active');
-        
+
         // Restore body scroll
         if (this.isMobile) {
             document.body.style.overflow = '';
         }
     }
 
+    // Fetch the server's configured plan dirs (+ auto-covered session roots) and
+    // render them in Settings. Server-side state, so it's read fresh each open.
+    async loadPlanDirsUI() {
+        try {
+            const res = await this.authFetch('/api/plan-dirs');
+            if (!res.ok) return;
+            this.renderPlanDirs(await res.json());
+        } catch (_) { /* best-effort */ }
+    }
+
+    renderPlanDirs(data) {
+        const list = document.getElementById('planDirsList');
+        if (!list) return;
+        const dirs = (data && data.dirs) || [];
+        const sessionRoots = (data && data.sessionRoots) || [];
+        list.innerHTML = '';
+        if (!dirs.length) {
+            const empty = document.createElement('div');
+            empty.className = 'plan-dir-row plan-dir-empty';
+            empty.textContent = 'No extra directories.';
+            list.appendChild(empty);
+        } else {
+            for (const dir of dirs) {
+                const row = document.createElement('div');
+                row.className = 'plan-dir-row';
+                const p = document.createElement('span');
+                p.className = 'plan-dir-path';
+                p.textContent = dir; // textContent — never innerHTML (paths are data)
+                p.title = dir;
+                const rm = document.createElement('button');
+                rm.className = 'plan-dir-remove';
+                rm.setAttribute('data-remove-dir', dir);
+                rm.title = 'Remove';
+                rm.textContent = '×';
+                row.appendChild(p);
+                row.appendChild(rm);
+                list.appendChild(row);
+            }
+        }
+        // Only refresh the hint when we have session roots (i.e. from the GET,
+        // not from a POST response which omits them).
+        const hint = document.getElementById('planDirsHint');
+        if (hint && sessionRoots.length) {
+            hint.textContent = "The current project's .claude/plans is always available. Auto-covered now: " + sessionRoots.join(', ');
+        }
+    }
+
+    async postPlanDirs(dirs) {
+        try {
+            const res = await this.authFetch('/api/plan-dirs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dirs })
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (_) { return null; }
+    }
+
+    currentPlanDirRows() {
+        return Array.from(document.querySelectorAll('#planDirsList [data-remove-dir]'))
+            .map((b) => b.getAttribute('data-remove-dir'));
+    }
+
+    async addPlanDir() {
+        const input = document.getElementById('planDirInput');
+        if (!input) return;
+        const val = input.value.trim();
+        if (!val) return;
+        const data = await this.postPlanDirs([...this.currentPlanDirRows(), val]);
+        if (!data) return;
+        input.value = '';
+        this.renderPlanDirs(data);
+        if (data.rejected && data.rejected.length) {
+            this.showNotification('Not added: ' + data.rejected.map((r) => `${r.dir} (${r.reason})`).join(', '));
+        }
+    }
+
+    async removePlanDir(dir) {
+        const data = await this.postPlanDirs(this.currentPlanDirRows().filter((d) => d !== dir));
+        if (data) this.renderPlanDirs(data);
+    }
+
     loadSettings() {
         const defaults = {
             fontSize: 14,
             showTokenStats: true,
-            theme: 'dark'
+            theme: 'dark',
+            // Desktop wheel-scroll animation in ms. 0 = instant (snappiest);
+            // higher feels smoother/heavier. Mobile always uses 0 (its own
+            // touch-momentum handler drives scrolling).
+            smoothScrollDuration: 100
         };
         
         try {
@@ -1656,7 +1785,8 @@ class ClaudeCodeWebInterface {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
             showTokenStats: document.getElementById('showTokenStats').checked,
-            theme: (document.getElementById('themeSelect')?.value) || 'dark'
+            theme: (document.getElementById('themeSelect')?.value) || 'dark',
+            smoothScrollDuration: parseInt(document.getElementById('smoothScroll')?.value ?? 100)
         };
         
         try {
@@ -1678,7 +1808,17 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.options.fontSize = settings.fontSize;
-        
+
+        // Live-apply scroll animation to the main terminal and every split.
+        // Mobile keeps 0 (its touch handler owns scrolling).
+        const scrollDur = this.isMobile ? 0 : settings.smoothScrollDuration;
+        this.terminal.options.smoothScrollDuration = scrollDur;
+        if (this.splitContainer && this.splitContainer.splits) {
+            this.splitContainer.splits.forEach((sp) => {
+                if (sp && sp.terminal) sp.terminal.options.smoothScrollDuration = scrollDur;
+            });
+        }
+
         this.fitTerminal();
     }
 

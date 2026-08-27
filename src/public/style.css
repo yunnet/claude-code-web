@@ -357,6 +357,17 @@ body {
     color: var(--text-primary);
 }
 
+/* File-explorer toolbar button: a full 44x44 touch target with a larger folder
+   icon (the shared .tab-settings default is a smaller 28x28 / 16px gear size). */
+#explorerBtn {
+    width: 44px;
+    height: 44px;
+}
+#explorerBtn svg {
+    width: 24px;
+    height: 24px;
+}
+
 /* Tab Overflow Dropdown for Mobile */
 .tab-overflow-wrapper {
     position: relative;
@@ -1075,6 +1086,88 @@ body {
     gap: 12px;
 }
 
+/* Block-layout setting (label above a stacked control), e.g. plan directories. */
+.setting-group-block {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+.setting-group-block > label {
+    width: auto;
+}
+.setting-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0;
+}
+.setting-hint code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+.plan-dirs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 160px;
+    overflow-y: auto;
+}
+.plan-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+}
+.plan-dir-empty {
+    justify-content: center;
+    color: var(--text-secondary);
+}
+.plan-dir-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+    direction: rtl; /* keep the tail (filename/leaf) visible when truncated */
+    text-align: left;
+}
+.plan-dir-remove {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+}
+.plan-dir-remove:hover {
+    color: var(--danger, #ff6b6b);
+    background: var(--bg-tertiary);
+}
+.plan-dirs-add {
+    display: flex;
+    gap: 8px;
+}
+.plan-dirs-add input {
+    flex: 1;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
 .setting-group label {
     flex: 0 0 auto;
     width: 100px;
@@ -1518,6 +1611,63 @@ body {
     opacity: 0.8;
 }
 
+/* The file explorer is a right-side drawer (not a centered modal like the
+   working-directory folder browser it shares markup with). It must also sit
+   above the assistant-chooser overlay (#overlay is z-index 5000) so it stays
+   usable before a session is started. Only #fileExplorerModal is affected, so
+   the folder browser keeps its centered layout. */
+#fileExplorerModal {
+    z-index: 6000;
+    justify-content: flex-end; /* anchor the drawer to the right edge */
+    align-items: stretch;      /* full viewport height */
+}
+#fileExplorerModal .folder-browser-content {
+    width: 440px;
+    max-width: 92vw;
+    height: 100vh;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+    animation: explorer-drawer-in 0.22s ease;
+}
+@keyframes explorer-drawer-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+}
+
+/* Non-interactive note rows in the explorer (empty folder / truncated notice):
+   muted text, and no click-affordance hover accent. */
+.folder-empty,
+.folder-truncated {
+    color: var(--text-secondary);
+    cursor: default;
+    justify-content: center;
+    font-size: 13px;
+}
+.folder-empty:hover,
+.folder-truncated:hover {
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-color: var(--border);
+}
+
+/* File size shown at the right of a file row in the explorer. Inherits the
+   hover text colour from .folder-item:hover so it stays readable. */
+.folder-size {
+    flex-shrink: 0;
+    margin-left: 10px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.folder-item:hover .folder-size {
+    color: white;
+}
+
 .folder-browser-footer {
     display: flex;
     justify-content: space-between;
@@ -1624,6 +1774,21 @@ body {
 .mobile-menu.active {
     left: 0;
     box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Version/build marker pinned to the bottom-left of the left drawer (margin-top
+   auto pushes it down; .mobile-menu is a flex column). Lets dev/stable be told
+   apart and compared. */
+.mobile-menu-footer {
+    margin-top: auto;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.3px;
+    text-align: left;
+    user-select: text;
 }
 
 .mobile-menu-header {

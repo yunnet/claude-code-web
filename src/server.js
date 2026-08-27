@@ -17,6 +17,10 @@ const UsageAnalytics = require('./usage-analytics');
 class ClaudeCodeWebServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
+    // A short fingerprint of the source tree, computed once at startup, so two
+    // instances (dev 32353 / stable 32352) can be compared at a glance in the UI:
+    // same buildId = same code, different = one side wasn't redeployed.
+    this.buildId = this.computeBuildId();
     this.auth = options.auth;
     this.noAuth = options.noAuth || false;
     this.dev = options.dev || false;
@@ -29,7 +33,11 @@ class ClaudeCodeWebServer {
     // Explicit plan directories for GET /api/plan. When non-empty they OVERRIDE
     // the default (auto-discovered `<project>/.claude/plans`): only files under
     // these dirs are served, and the `.claude/plans` path segment isn't required.
-    this.planDirs = (options.planDirs || []).map((p) => path.resolve(p));
+    // Runtime-editable list of extra plan directories. A persisted list (edited
+    // via /api/plan-dirs) takes precedence; otherwise seed from --plans-dir.
+    const seededPlanDirs = (options.planDirs || []).map((p) => path.resolve(p));
+    const persistedPlanDirs = this.loadPlanDirs();
+    this.planDirs = persistedPlanDirs !== null ? persistedPlanDirs : seededPlanDirs;
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -250,6 +258,13 @@ class ClaudeCodeWebServer {
     // plan path is a single percent-encoded segment (slashes as %2F); Express
     // decodes it back before servePlanFile resolves it.
     this.app.get('/api/plan/:token/:file', (req, res) => this.servePlanFile(req, res));
+
+    // Serve an arbitrary file for the file explorer to open in a new browser tab.
+    // Like /api/plan it's a browser-navigation exception (a new tab can't send an
+    // Authorization header) so it authenticates with a token in the URL, and is
+    // registered BEFORE the global auth middleware. The path form ends in the
+    // file's real extension so the browser renders it natively (images/text/pdf).
+    this.app.get('/api/fs/file/:token/:file', (req, res) => this.serveFile(req, res));
 
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
@@ -473,7 +488,10 @@ class ClaudeCodeWebServer {
         selectedWorkingDir: this.selectedWorkingDir,
         baseFolder: this.baseFolder,
         homeDir: require('os').homedir(),
-        aliases: this.aliases
+        aliases: this.aliases,
+        version: require('../package.json').version,
+        port: this.port,
+        buildId: this.buildId
       });
     });
 
@@ -586,9 +604,22 @@ class ClaudeCodeWebServer {
       }
     });
 
+    // File explorer directory listing: like /api/folders but returns files AND
+    // folders (with size/mtime) for a read-only Explorer-style browser. Normal
+    // header auth (a regular fetch), unlike /api/fs/file which is a browser-nav
+    // token exception.
+    this.app.get('/api/fs/list', (req, res) => this.listDirectory(req, res));
+
+    // Runtime-editable plan directories (additive to auto-discovery). Normal
+    // header auth. GET returns the configured dirs plus active session roots (the
+    // latter are already auto-covered, shown for context). POST replaces the list
+    // after validating each entry is a real existing directory, and persists it.
+    this.app.get('/api/plan-dirs', (req, res) => this.getPlanDirs(req, res));
+    this.app.post('/api/plan-dirs', (req, res) => this.setPlanDirs(req, res));
+
     this.app.post('/api/set-working-dir', (req, res) => {
       const { path: selectedPath } = req.body;
-      
+
       // Validate the path
       const validation = this.validatePath(selectedPath);
       if (!validation.valid) {
@@ -1422,11 +1453,12 @@ class ClaudeCodeWebServer {
     res.json({ ok: true });
   }
 
-  // Serve a plan markdown file for GET /api/plan?path=&token=. Extracted so it is
-  // unit-testable with mock req/res. Security: query-token auth (still required),
-  // and a strict allow-list — the resolved real path must be a `.md` inside a
-  // `.claude/plans/` directory under an allowed root (the base folder or an active
-  // session's working dir). realpath() resolves symlinks so links can't escape.
+  // Serve a plan markdown file for GET /api/plan. Extracted so it is unit-testable
+  // with mock req/res. Security: query/path token auth (still required), and a
+  // strict allow-list — the resolved real path must be a `.md` under EITHER a
+  // `.claude/plans/` directory inside an auto root (base folder / active session
+  // working dir) OR a configured plan dir. realpath() resolves symlinks so links
+  // can't escape.
   servePlanFile(req, res) {
     // Token and path come from either the query (`?path=&token=`) or the
     // plugin-friendly path form (`/api/plan/:token/:file`). Express has already
@@ -1444,47 +1476,259 @@ class ClaudeCodeWebServer {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    // Allowed roots. If explicit plan dirs are configured they OVERRIDE the
-    // default: only files under them are served and the `.claude/plans` segment
-    // isn't required (the operator opted these dirs in). Otherwise fall back to
-    // the base folder plus every active session's working dir, still requiring a
-    // `.claude/plans` segment so we don't serve arbitrary `.md` files.
-    const overridden = this.planDirs.length > 0;
-    const roots = overridden ? this.planDirs.slice() : [this.baseFolder];
-    if (!overridden) {
-      for (const s of this.claudeSessions.values()) {
-        if (s && s.workingDir) roots.push(s.workingDir);
-      }
+    // Allowed roots are the UNION of two sets (additive, not override):
+    //  • auto roots — the base folder plus every active session's working dir;
+    //    a file here must also sit under a `.claude/plans/` segment (so we serve
+    //    the current project's plans automatically without serving arbitrary md).
+    //  • configured plan dirs (`this.planDirs`, from --plans-dir or the runtime
+    //    /api/plan-dirs setting) — any `.md` under them, no segment requirement
+    //    (the user opted these dirs in explicitly).
+    const autoRoots = [this.baseFolder];
+    for (const s of this.claudeSessions.values()) {
+      if (s && s.workingDir) autoRoots.push(s.workingDir);
     }
-    const realRoots = [];
-    for (const r of roots) {
-      try { realRoots.push(fs.realpathSync(r)); } catch (_) { /* skip unreadable root */ }
+    const realAutoRoots = [];
+    for (const r of autoRoots) {
+      try { realAutoRoots.push(fs.realpathSync(r)); } catch (_) { /* skip unreadable root */ }
     }
+    const realPlanDirs = [];
+    for (const r of this.planDirs) {
+      try { realPlanDirs.push(fs.realpathSync(r)); } catch (_) { /* skip */ }
+    }
+    const under = (real, roots) => roots.some((rr) => real === rr || real.startsWith(rr + path.sep));
 
     const PLANS_SEGMENT = `${path.sep}.claude${path.sep}plans${path.sep}`;
-    const candidates = path.isAbsolute(raw) ? [raw] : roots.map((r) => path.join(r, raw));
+    // Relative paths are resolved against every candidate root.
+    const candidates = path.isAbsolute(raw)
+      ? [raw]
+      : [...autoRoots, ...this.planDirs].map((r) => path.join(r, raw));
     for (const cand of candidates) {
       try {
         const real = fs.realpathSync(cand);
         if (!real.endsWith('.md')) continue;
-        if (!overridden && real.indexOf(PLANS_SEGMENT) === -1) continue;
-        const underRoot = realRoots.some((rr) => real === rr || real.startsWith(rr + path.sep));
-        if (!underRoot) continue;
+        const inPlanDir = under(real, realPlanDirs);
+        const inAutoRoot = under(real, realAutoRoots) && real.indexOf(PLANS_SEGMENT) !== -1;
+        if (!inPlanDir && !inAutoRoot) continue;
         const stat = fs.statSync(real);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
-        const content = fs.readFileSync(real);
         // text/plain (not text/markdown): Chrome has no native markdown viewer,
         // so text/markdown gets downloaded rather than rendered as a page —
         // browser Markdown extensions can only transform a rendered text page.
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        // RFC 5987: filename* percent-encodes UTF-8 so non-ASCII plan names (e.g.
-        // Chinese) don't throw — a raw non-latin1 header value makes setHeader throw.
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(path.basename(real))}`);
-        return res.send(content);
+        return this.sendInlineFile(res, real, 'text/plain; charset=utf-8', fs.readFileSync(real));
       } catch (_) { /* try the next candidate */ }
     }
     return res.status(404).json({ error: 'Not found' });
+  }
+
+  // Shared inline-file response for the plan/file endpoints. Sets the safe header
+  // set once: nosniff (no MIME sniffing), no-referrer (the token rides these URLs,
+  // so never leak it via Referer), no-cache, and an RFC 5987 filename* so non-ASCII
+  // (e.g. Chinese) names don't throw in setHeader (a raw non-latin1 value throws).
+  sendInlineFile(res, realPath, contentType, content) {
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(path.basename(realPath))}`);
+    return res.send(content);
+  }
+
+  // GET /api/fs/list?path=&hidden= — directory listing (files + folders) for the
+  // read-only file explorer. Folders first, then files, each with size/mtime.
+  // Scope matches the folder browser: any path the user's account can read (this
+  // is a local, auth-protected, single-user tool).
+  listDirectory(req, res) {
+    const MAX_ITEMS = 2000; // Bound the per-entry stat cost so a huge directory
+                            // (node_modules, /nix/store) can't freeze the shared
+                            // single-threaded server with 10k+ sync stat calls.
+    const requested = req.query.path || this.baseFolder;
+    const validation = this.validatePath(requested);
+    if (!validation.valid) {
+      return res.status(403).json({ error: validation.error, message: 'Access to this directory is not allowed' });
+    }
+    const dir = validation.path;
+    const showHidden = req.query.hidden === '1' || req.query.hidden === 'true';
+    try {
+      // First pass: classify (no syscall except for the rare symlink) and sort.
+      // Only the second pass stats for size, and only for the capped slice.
+      const classified = [];
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!showHidden && ent.name.startsWith('.')) continue;
+        const isSymlink = ent.isSymbolicLink();
+        let isDir = ent.isDirectory();
+        if (isSymlink) {
+          try { isDir = fs.statSync(path.join(dir, ent.name)).isDirectory(); } catch (_) { continue; } // broken link
+        }
+        classified.push({ name: ent.name, isDir, isSymlink });
+      }
+      // Folders first, then files; each alphabetical (case-insensitive).
+      classified.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      const truncated = classified.length > MAX_ITEMS;
+      const items = (truncated ? classified.slice(0, MAX_ITEMS) : classified).map((e) => {
+        let size = 0;
+        if (!e.isDir) {
+          try { size = fs.statSync(path.join(dir, e.name)).size; } catch (_) { /* unreadable; keep 0 */ }
+        }
+        return { name: e.name, type: e.isDir ? 'dir' : 'file', size, isSymlink: e.isSymlink };
+      });
+      const parentDir = path.dirname(dir);
+      res.json({ path: dir, parent: parentDir !== dir ? parentDir : null, home: this.baseFolder, items, truncated });
+    } catch (error) {
+      const status = error && error.code === 'ENOENT' ? 404 : 403;
+      res.status(status).json({ error: 'Cannot access directory', message: error.message });
+    }
+  }
+
+  // GET /api/fs/file/:token/:file — serve a file's bytes so the explorer can open
+  // it in a new tab. Browser-nav token exception (like /api/plan): token and path
+  // are path segments (a new tab can't send a header). Content-Type is picked by
+  // extension so the browser renders images/text/pdf natively; the realpath is
+  // resolved (symlinks) and the target must be a regular file ≤ 10 MB.
+  serveFile(req, res) {
+    const params = req.params || {};
+    if (!this.noAuth && this.auth) {
+      const token = params.token;
+      if (token !== `Bearer ${this.auth}` && token !== this.auth) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+    const raw = params.file;
+    if (typeof raw !== 'string' || raw.length === 0 || raw.indexOf('\0') !== -1) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const validation = this.validatePath(raw);
+    if (!validation.valid) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    try {
+      const real = fs.realpathSync(validation.path);
+      const stat = fs.statSync(real);
+      if (!stat.isFile()) return res.status(404).json({ error: 'Not found' });
+      if (stat.size > 10 * 1024 * 1024) return res.status(413).json({ error: 'File too large' });
+      return this.sendInlineFile(res, real, this.contentTypeForFile(real), fs.readFileSync(real));
+    } catch (_) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+  }
+
+  // Pick a Content-Type from the file extension. SVG and HTML are served as
+  // text/plain on purpose: rendered as their real type in a top-level navigation
+  // they can run script on this origin and read the auth token from sessionStorage.
+  // Showing their source is the safe, still-useful behavior for a file viewer.
+  contentTypeForFile(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const images = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.ico': 'image/x-icon'
+    };
+    const textExts = [
+      '.txt', '.log', '.md', '.markdown', '.json', '.js', '.mjs', '.cjs', '.ts', '.tsx',
+      '.jsx', '.css', '.scss', '.less', '.html', '.htm', '.xml', '.svg', '.yml', '.yaml',
+      '.sh', '.bash', '.zsh', '.py', '.rb', '.go', '.rs', '.java', '.kt', '.c', '.h',
+      '.cc', '.cpp', '.hpp', '.cs', '.php', '.pl', '.lua', '.r', '.ini', '.conf', '.cfg',
+      '.toml', '.env', '.sql', '.csv', '.tsv', '.gitignore', '.dockerfile', '.makefile'
+    ];
+    if (ext === '.pdf') return 'application/pdf';
+    if (images[ext]) return images[ext];
+    if (textExts.includes(ext)) return 'text/plain; charset=utf-8';
+    return 'application/octet-stream';
+  }
+
+  // Fingerprint the served source tree (path + size + mtime of every file under
+  // src/, minus the static vendor bundle) into a short hash. Computed once at
+  // startup; surfaced via /api/config so the UI can show which build is running.
+  computeBuildId() {
+    try {
+      const root = __dirname; // this file lives in src/
+      const parts = [];
+      const walk = (dir) => {
+        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (ent.name.startsWith('.') || ent.name === 'vendor' || ent.name === 'node_modules') continue;
+          const full = path.join(dir, ent.name);
+          if (ent.isDirectory()) walk(full);
+          else if (ent.isFile()) {
+            const st = fs.statSync(full);
+            parts.push(`${path.relative(root, full)}:${st.size}:${Math.round(st.mtimeMs)}`);
+          }
+        }
+      };
+      walk(root);
+      parts.sort();
+      return crypto.createHash('sha1').update(parts.join('\n')).digest('hex').slice(0, 8);
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
+  // Where the runtime plan-dirs list is persisted — same data dir as SessionStore
+  // (CCW_DATA_DIR override, else ~/.claude-code-web), so it survives restarts.
+  planDirsFile() {
+    const base = process.env.CCW_DATA_DIR
+      ? path.resolve(process.env.CCW_DATA_DIR)
+      : path.join(require('os').homedir(), '.claude-code-web');
+    return path.join(base, 'plan-dirs.json');
+  }
+
+  // Load the persisted plan dirs, or null if none/invalid (caller then seeds from
+  // the --plans-dir flag). Resolved to absolute paths.
+  loadPlanDirs() {
+    try {
+      const arr = JSON.parse(fs.readFileSync(this.planDirsFile(), 'utf8'));
+      if (Array.isArray(arr)) return arr.filter((x) => typeof x === 'string').map((p) => path.resolve(p));
+    } catch (_) { /* no file / invalid → fall back to the flag seed */ }
+    return null;
+  }
+
+  // Persist the current plan dirs (atomic temp+rename). Best-effort; never throws.
+  savePlanDirs() {
+    try {
+      const file = this.planDirsFile();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.planDirs, null, 2));
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      if (this.dev) console.warn('Failed to persist plan dirs:', e.message);
+    }
+  }
+
+  // GET /api/plan-dirs — the configured plan dirs plus the active session roots
+  // (already auto-covered; returned so the UI can show what's implicitly served).
+  getPlanDirs(req, res) {
+    const sessionRoots = [];
+    for (const s of this.claudeSessions.values()) {
+      if (s && s.workingDir) sessionRoots.push(s.workingDir);
+    }
+    res.json({ dirs: this.planDirs, sessionRoots });
+  }
+
+  // POST /api/plan-dirs { dirs: string[] } — replace the configured plan dirs.
+  // Each entry must resolve (realpath) to an existing directory; invalid ones are
+  // reported in `rejected` and dropped. The accepted list is deduped and persisted.
+  // This only registers directories to allow-list; reading still goes through
+  // servePlanFile's realpath check, so no arbitrary-path read is introduced.
+  setPlanDirs(req, res) {
+    const input = req.body && Array.isArray(req.body.dirs) ? req.body.dirs : null;
+    if (!input) return res.status(400).json({ error: 'dirs must be an array' });
+    const accepted = [];
+    const rejected = [];
+    const seen = new Set();
+    for (const d of input) {
+      if (typeof d !== 'string' || !d.trim()) { rejected.push({ dir: d, reason: 'empty' }); continue; }
+      try {
+        const real = fs.realpathSync(path.resolve(d.trim()));
+        if (!fs.statSync(real).isDirectory()) { rejected.push({ dir: d, reason: 'not a directory' }); continue; }
+        if (!seen.has(real)) { seen.add(real); accepted.push(real); }
+      } catch (_) {
+        rejected.push({ dir: d, reason: 'not found' });
+      }
+    }
+    this.planDirs = accepted;
+    this.savePlanDirs();
+    res.json({ dirs: this.planDirs, rejected });
   }
 
   broadcastToSession(claudeSessionId, data) {
