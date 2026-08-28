@@ -330,6 +330,19 @@ class Split {
         }
     }
 
+    // Fit to the current cell size AND push the new dimensions to the PTY, so the
+    // CLI (a full-screen TUI) reflows to fill the pane after a split/resize. fit()
+    // alone only resizes the local xterm; without this the PTY keeps its old size
+    // (often the default 80x24 from being opened while the pane was hidden) and the
+    // CLI never redraws to the pane width.
+    syncSize() {
+        this.fit();
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            const { cols, rows } = this.terminal;
+            this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+    }
+
     updateActiveState() {
         if (this.container) {
             if (this.isActive) {
@@ -364,7 +377,8 @@ class SplitContainer {
         this.enabled = false;
         this.splits = [];
         this.activeSplitIndex = 0;
-        this.dividerPosition = 50; // percentage
+        this.dividerPosition = 50; // percentage (shared by both orientations)
+        this.orientation = 'horizontal'; // 'horizontal' = left/right, 'vertical' = top/bottom
         
         // Create split container elements
         this.createSplitElements();
@@ -417,6 +431,9 @@ class SplitContainer {
 
         main.appendChild(this.splitContainerEl);
 
+        // Apply the initial grid layout (columns vs rows) for the current orientation
+        this.applyLayout();
+
         // Create Split instances with their own terminals
         this.splits.push(new Split(leftSplit, 0, this.app));
         this.splits.push(new Split(rightSplit, 1, this.app));
@@ -432,24 +449,27 @@ class SplitContainer {
 
     setupDividerDrag() {
         let isDragging = false;
-        let startX = 0;
+        let startCoord = 0;
         let startPosition = 50;
 
         this.divider.addEventListener('mousedown', (e) => {
             isDragging = true;
-            startX = e.clientX;
+            const vertical = this.orientation === 'vertical';
+            startCoord = vertical ? e.clientY : e.clientX;
             startPosition = this.dividerPosition;
-            document.body.style.cursor = 'col-resize';
+            document.body.style.cursor = vertical ? 'row-resize' : 'col-resize';
             e.preventDefault();
         });
 
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            
+
+            const vertical = this.orientation === 'vertical';
             const container = this.splitContainerEl.getBoundingClientRect();
-            const delta = e.clientX - startX;
-            const deltaPercent = (delta / container.width) * 100;
-            
+            const delta = vertical ? (e.clientY - startCoord) : (e.clientX - startCoord);
+            const extent = vertical ? container.height : container.width;
+            const deltaPercent = (delta / extent) * 100;
+
             this.dividerPosition = Math.max(20, Math.min(80, startPosition + deltaPercent));
             this.updateDividerPosition();
         });
@@ -463,23 +483,94 @@ class SplitContainer {
         });
     }
 
-    updateDividerPosition() {
-        const leftSplit = this.splitContainerEl.querySelector('.split-left');
-        const rightSplit = this.splitContainerEl.querySelector('.split-right');
-        
-        if (leftSplit && rightSplit) {
-            leftSplit.style.width = `${this.dividerPosition}%`;
-            rightSplit.style.width = `${100 - this.dividerPosition}%`;
-            
-            // Fit both terminals
-            this.splits.forEach(split => split.fit());
+    applyLayout() {
+        if (!this.splitContainerEl) return;
+        const a = this.dividerPosition;
+        const b = 100 - this.dividerPosition;
+        const paneTracks = `minmax(0, ${a}fr) 6px minmax(0, ${b}fr)`;
+        if (this.orientation === 'vertical') {
+            this.splitContainerEl.classList.add('vertical');
+            this.splitContainerEl.style.gridTemplateColumns = 'minmax(0, 1fr)';
+            this.splitContainerEl.style.gridTemplateRows = paneTracks;
+        } else {
+            this.splitContainerEl.classList.remove('vertical');
+            this.splitContainerEl.style.gridTemplateRows = 'minmax(0, 1fr)';
+            this.splitContainerEl.style.gridTemplateColumns = paneTracks;
         }
     }
 
-    async createSplit(sessionId) {
+    // Re-fit + resize each pane's PTY after the grid layout and renderer settle.
+    scheduleRefit() {
+        const run = () => this.splits.forEach(s => s.syncSize());
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => requestAnimationFrame(run));
+        } else {
+            setTimeout(run, 50);
+        }
+    }
+
+    updateDividerPosition() {
+        this.applyLayout();
+        this.scheduleRefit();
+    }
+
+    setOrientation(orientation) {
+        if (orientation !== 'horizontal' && orientation !== 'vertical') return;
+        if (this.orientation === orientation) return;
+        this.orientation = orientation;
+        this.applyLayout();
+        this.scheduleRefit();
+        this.saveState();
+    }
+
+    async applyPreset(orientation) {
+        if (this.enabled) {
+            this.setOrientation(orientation);
+            return;
+        }
+        let second = null;
+        const stm = this.app && this.app.sessionTabManager;
+        if (stm && typeof stm.getOrderedTabIds === 'function') {
+            const ids = stm.getOrderedTabIds();
+            second = ids.find(id => id !== this.app.currentClaudeSessionId) || null;
+        }
+        await this.createSplit(second, orientation);
+    }
+
+    openLayoutMenu(anchorEl) {
+        document.querySelectorAll('.pane-session-menu').forEach(m => m.remove());
+        const menu = document.createElement('div');
+        menu.className = 'pane-session-menu';
+        const addItem = (label, fn, active) => {
+            const el = document.createElement('div');
+            el.className = 'pane-session-item' + (active ? ' used' : '');
+            el.textContent = (active ? '\u2713 ' : '') + label;
+            el.onclick = () => { try { fn(); } finally { menu.remove(); } };
+            menu.appendChild(el);
+        };
+        addItem('\u5355\u5c4f', () => this.closeSplit(), !this.enabled);
+        addItem('\u5de6\u53f3\u5206\u5c4f', () => this.applyPreset('horizontal'), this.enabled && this.orientation === 'horizontal');
+        addItem('\u4e0a\u4e0b\u5206\u5c4f', () => this.applyPreset('vertical'), this.enabled && this.orientation === 'vertical');
+        document.body.appendChild(menu);
+        const rect = anchorEl ? anchorEl.getBoundingClientRect() : { bottom: 60, left: 60 };
+        menu.style.top = `${rect.bottom + 4}px`;
+        menu.style.left = `${Math.max(8, rect.left - 80)}px`;
+        const close = (ev) => {
+            if (!menu.contains(ev.target) && ev.target !== anchorEl) {
+                menu.remove();
+                document.removeEventListener('mousedown', close, true);
+            }
+        };
+        setTimeout(() => document.addEventListener('mousedown', close, true), 0);
+    }
+
+    async createSplit(sessionId, orientation) {
         if (this.enabled) return; // Already split
 
         this.enabled = true;
+        if (orientation === 'horizontal' || orientation === 'vertical') {
+            this.orientation = orientation;
+        }
         
         // Hide single terminal container
         const terminalContainer = document.getElementById('terminalContainer');
@@ -487,16 +578,26 @@ class SplitContainer {
             terminalContainer.style.display = 'none';
         }
 
-        // Show split container
-        this.splitContainerEl.style.display = 'flex';
+        // Show split container (grid layout; applyLayout sets the tracks)
+        this.splitContainerEl.style.display = 'grid';
+        this.applyLayout();
 
         // Update divider position
         this.updateDividerPosition();
 
         // Set sessions - left gets current session, right gets the dragged session
         const currentSessionId = this.app.currentClaudeSessionId;
+        // F1: detach the main terminal from its session first, so the current
+        // session isn't double-attached (main socket + left pane) — two clients
+        // of different sizes would otherwise fight over the PTY resize.
+        if (typeof this.app.leaveSession === 'function') {
+            this.app.leaveSession();
+        }
         await this.splits[0].setSession(currentSessionId);
         await this.splits[1].setSession(sessionId);
+
+        // Push correct pane dimensions to both PTYs once layout + sockets settle.
+        this.scheduleRefit();
 
         // Focus right split (newly created)
         this.focusSplit(1);
@@ -511,6 +612,16 @@ class SplitContainer {
         if (!this.enabled) return;
 
         this.enabled = false;
+
+        // Capture which session the main terminal should rejoin BEFORE we clear
+        // the panes' sessionIds. currentClaudeSessionId can be null here (entering
+        // split leaveSession's the main socket, whose async ack nulls it), so fall
+        // back to the focused pane's session — that is what the user was looking at.
+        const activePane = this.splits[this.activeSplitIndex];
+        const rejoinId = this.app.currentClaudeSessionId
+            || (activePane && activePane.sessionId)
+            || (this.splits[0] && this.splits[0].sessionId)
+            || null;
 
         // Disconnect both splits
         this.splits.forEach(split => split.disconnect());
@@ -536,10 +647,17 @@ class SplitContainer {
         
         this.activeSplitIndex = 0;
 
-        // Reconnect main terminal to current session if we have one
-        if (this.app.currentClaudeSessionId) {
+        // Reconnect main terminal to the captured session. The main socket
+        // stayed open (we only leaveSession'd on enter), so rejoin it rather
+        // than opening a new socket.
+        if (rejoinId) {
+            this.app.currentClaudeSessionId = rejoinId;
             setTimeout(() => {
-                this.app.connect();
+                if (typeof this.app.joinSession === 'function') {
+                    this.app.joinSession(rejoinId);
+                } else {
+                    this.app.connect();
+                }
             }, 100);
         }
 
@@ -609,9 +727,7 @@ class SplitContainer {
                 if (this.enabled) {
                     this.closeSplit();
                 } else {
-                    // Create split - need to pick a session to split with
-                    // For now, just show a message
-                    console.log('[SplitContainer] To create a split, drag a tab to the right edge of the terminal');
+                    this.applyPreset('horizontal');
                 }
             }
             
@@ -632,6 +748,7 @@ class SplitContainer {
         try {
             const state = {
                 enabled: this.enabled,
+                orientation: this.orientation,
                 dividerPosition: this.dividerPosition,
                 activeSplitIndex: this.activeSplitIndex,
                 sessions: this.splits.map(s => s.sessionId)
@@ -649,9 +766,12 @@ class SplitContainer {
 
             const state = JSON.parse(saved);
             
-            // Restore divider position
+            // Restore divider position + orientation preference
             if (state.dividerPosition) {
                 this.dividerPosition = state.dividerPosition;
+            }
+            if (state.orientation === 'horizontal' || state.orientation === 'vertical') {
+                this.orientation = state.orientation;
             }
 
             // Note: Don't auto-restore enabled state on page load
@@ -662,67 +782,60 @@ class SplitContainer {
         }
     }
 
-    // Setup drop zones for drag-to-split
+    // Setup drop zones for drag-to-split. Right edge -> left/right split,
+    // bottom edge -> top/bottom split.
     setupDropZones() {
         const terminalContainer = document.getElementById('terminalContainer');
         if (!terminalContainer) return;
 
-        // Create drop zone indicator
         const dropZone = document.createElement('div');
         dropZone.className = 'split-drop-zone';
         dropZone.style.display = 'none';
         terminalContainer.appendChild(dropZone);
 
-        // Listen for drag events on terminal container
-        terminalContainer.addEventListener('dragover', (e) => {
-            // Only show drop zone if we're not already in split mode
-            if (this.enabled) return;
-            
-            const sessionId = e.dataTransfer?.getData('application/x-session-id');
-            if (!sessionId) return;
-            
-            // Don't allow splitting with the current session
-            if (sessionId === this.app.currentClaudeSessionId) return;
+        const edgeAt = (e, rect) => {
+            const distRight = rect.right - e.clientX;
+            const distBottom = rect.bottom - e.clientY;
+            const nearRight = distRight < 120;
+            const nearBottom = distBottom < 120;
+            if (nearBottom && (!nearRight || distBottom <= distRight)) return 'vertical';
+            if (nearRight) return 'horizontal';
+            return null;
+        };
 
+        const isSessionDrag = (e) =>
+            !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('application/x-session-id');
+
+        terminalContainer.addEventListener('dragover', (e) => {
+            if (this.enabled || !isSessionDrag(e)) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
-
-            // Show drop zone if near right edge
             const rect = terminalContainer.getBoundingClientRect();
-            const isNearRightEdge = (e.clientX > rect.right - 100);
-
-            if (isNearRightEdge) {
+            const edge = edgeAt(e, rect);
+            if (edge) {
+                dropZone.classList.toggle('bottom', edge === 'vertical');
                 dropZone.style.display = 'block';
             } else {
                 dropZone.style.display = 'none';
             }
         });
 
-        terminalContainer.addEventListener('dragleave', () => {
-            dropZone.style.display = 'none';
-        });
+        terminalContainer.addEventListener('dragleave', () => { dropZone.style.display = 'none'; });
 
         terminalContainer.addEventListener('drop', async (e) => {
-            const sessionId = e.dataTransfer?.getData('application/x-session-id');
-            if (!sessionId) return;
-            
-            // Don't allow splitting with the current session
-            if (sessionId === this.app.currentClaudeSessionId) {
-                dropZone.style.display = 'none';
-                return;
-            }
-
-            const rect = terminalContainer.getBoundingClientRect();
-            const isNearRightEdge = (e.clientX > rect.right - 100);
-
-            if (isNearRightEdge && !this.enabled) {
-                e.preventDefault();
-                await this.createSplit(sessionId);
-            }
-
             dropZone.style.display = 'none';
+            const sessionId = e.dataTransfer && e.dataTransfer.getData('application/x-session-id');
+            if (!sessionId || this.enabled) return;
+            if (sessionId === this.app.currentClaudeSessionId) return;
+            const rect = terminalContainer.getBoundingClientRect();
+            const edge = edgeAt(e, rect);
+            if (edge) {
+                e.preventDefault();
+                await this.createSplit(sessionId, edge);
+            }
         });
     }
+
 }
 
 // Export for use in app.js

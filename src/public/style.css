@@ -800,11 +800,12 @@ body {
 .pane-session-item.used { color: var(--text-secondary); }
 .pane-session-item:hover { background: var(--bg-tertiary); }
 
-/* Split View */
+/* Split View — CSS grid; orientation swaps columns <-> rows (see splits.js applyLayout) */
 .split-container {
     flex: 1;
-    display: flex;
+    display: grid;
     min-height: 0;
+    min-width: 0;
     position: relative;
 }
 
@@ -813,6 +814,8 @@ body {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     background: var(--bg-primary);
     transition: border-color 0.2s ease;
 }
@@ -824,25 +827,29 @@ body {
 .split-terminal-wrapper {
     flex: 1;
     min-height: 0;
-  width: 100%;
+    width: 100%;
     display: flex;
     flex-direction: column;
 }
 
-.split-left {
-    width: 50%;
+/* The div passed to terminal.open() must FILL the wrapper's height, not collapse
+   to the xterm's content height — otherwise FitAddon measures too few rows and the
+   CLI (a full-screen TUI) leaves the lower half of the pane blank. */
+.split-terminal-wrapper > div {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
 }
 
-.split-right {
-    width: 50%;
-}
-
+/* Divider fills its 6px grid track (width in horizontal, height in vertical). */
 .split-divider {
-    width: 6px;
-  background: var(--border);
+    background: var(--border);
     cursor: col-resize;
-    flex-shrink: 0;
     transition: background 0.2s ease;
+}
+
+.split-container.vertical .split-divider {
+    cursor: row-resize;
 }
 
 .split-divider:hover {
@@ -886,6 +893,15 @@ body {
     border-radius: 8px;
     pointer-events: none;
     z-index: 100;
+}
+
+.split-drop-zone.bottom {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: 100px;
 }
 
 #terminal {

@@ -871,6 +871,11 @@ class ClaudeCodeWebInterface {
         // stays reachable from the hamburger menu). The explorer lives in
         // file-explorer.js and exposes window.fileExplorer.
         if (explorerBtn) explorerBtn.addEventListener('click', () => window.fileExplorer && window.fileExplorer.open());
+
+        const layoutBtn = document.getElementById('layoutBtn');
+        if (layoutBtn) layoutBtn.addEventListener('click', () => {
+            if (this.splitContainer) this.splitContainer.openLayoutMenu(layoutBtn);
+        });
         if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
 
         // Tile view toggle
