@@ -357,13 +357,16 @@ body {
     color: var(--text-primary);
 }
 
-/* File-explorer toolbar button: a full 44x44 touch target with a larger folder
-   icon (the shared .tab-settings default is a smaller 28x28 / 16px gear size). */
-#explorerBtn {
+/* File-explorer + split-layout toolbar buttons: a full 44x44 touch target with a
+   larger 24px icon (the shared .tab-settings default is a smaller 28x28 / 16px
+   gear size). Keep both the same size so the tab-bar action icons stay uniform. */
+#explorerBtn,
+#layoutBtn {
     width: 44px;
     height: 44px;
 }
-#explorerBtn svg {
+#explorerBtn svg,
+#layoutBtn svg {
     width: 24px;
     height: 24px;
 }
