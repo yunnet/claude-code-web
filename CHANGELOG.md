@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-08-28
+
 ### Added
 - **Per-session configuration.** Each session (tab) has its own config. Visual settings (font size, theme, Show Token Stats, scroll animation) are stored per session in `localStorage` (a new session inherits the latest default) and applied live when you switch tabs — theme now switches **without a page reload**. Plan directories are per session too (`session.planDirs`, persisted with the session), edited live from Settings via `GET/POST /api/plan-dirs?sessionId=`; the plan link URL carries the session (`/api/plan/<token>/<session>/<path>`) so the allow-list uses that session's working dir + its own plan dirs (plus the global `--plans-dir` base). This supersedes the previous global plan-dirs editing.
 - **Plan directories are additive and runtime-editable.** `/api/plan` now serves plans from the union of auto-discovered roots (the current project's `.claude/plans`, always on) **and** configured plan dirs — so a plan link opens whether it's in the project you're working in or an extra directory you registered. The configured list is editable live from Settings (no restart) via `GET/POST /api/plan-dirs` (header auth; POST validates each is a real directory, dedupes, persists to `<dataDir>/plan-dirs.json`; the persisted list wins over the `--plans-dir` seed). Previously `--plans-dir` *replaced* auto-discovery (override), which hid plans from other active projects.
