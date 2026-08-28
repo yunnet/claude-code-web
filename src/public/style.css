@@ -1654,8 +1654,9 @@ body {
     align-items: stretch;      /* full viewport height */
 }
 #fileExplorerModal .folder-browser-content {
+    position: relative; /* anchor for the left-edge resize handle */
     width: 440px;
-    max-width: 92vw;
+    max-width: 95vw;
     height: 100vh;
     max-height: none;
     margin: 0;
@@ -1665,6 +1666,22 @@ body {
     border-bottom: none;
     box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
     animation: explorer-drawer-in 0.22s ease;
+}
+
+/* Left-edge grab handle to drag the drawer wider/narrower (see file-explorer.js). */
+.explorer-resize-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    z-index: 10;
+    background: transparent;
+    transition: background 0.15s ease;
+}
+.explorer-resize-handle:hover {
+    background: var(--accent);
 }
 @keyframes explorer-drawer-in {
     from { transform: translateX(100%); }

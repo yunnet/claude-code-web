@@ -48,6 +48,52 @@
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modal.classList.contains('active')) this.close();
       });
+
+      this.setupResize();
+    }
+
+    // The drawer is anchored to the right edge, so a handle on its LEFT edge
+    // lets the user drag it wider/narrower. The chosen width persists.
+    clampWidth(w) {
+      const min = 300;
+      const max = Math.max(min, Math.min(window.innerWidth - 40, window.innerWidth * 0.95));
+      return Math.min(max, Math.max(min, w));
+    }
+
+    setupResize() {
+      const modal = this.el('fileExplorerModal');
+      const content = modal && modal.querySelector('.folder-browser-content');
+      if (!content) return;
+
+      // Restore the saved width.
+      try {
+        const saved = parseInt(localStorage.getItem('cc-web-explorer-width'), 10);
+        if (saved) content.style.width = this.clampWidth(saved) + 'px';
+      } catch (_) {}
+
+      const handle = document.createElement('div');
+      handle.className = 'explorer-resize-handle';
+      handle.title = 'Drag to resize';
+      content.appendChild(handle);
+
+      let dragging = false;
+      handle.addEventListener('mousedown', (e) => {
+        dragging = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        content.style.width = this.clampWidth(window.innerWidth - e.clientX) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        try { localStorage.setItem('cc-web-explorer-width', String(parseInt(content.style.width, 10) || 440)); } catch (_) {}
+      });
     }
 
     open(startPath) {
