@@ -713,9 +713,25 @@ class SplitContainer {
     async onTabSwitch(sessionId) {
         if (!this.enabled) return;
 
+        // If the session is already shown in a pane, just focus that pane —
+        // don't load it a second time (that would double-attach the same PTY).
+        const existing = this.splits.findIndex(s => s.sessionId === sessionId);
+        if (existing !== -1) {
+            if (existing !== this.activeSplitIndex) {
+                this.focusSplit(existing);
+            } else if (this.app) {
+                this.app.currentClaudeSessionId = sessionId;
+            }
+            return;
+        }
+
+        // Otherwise load it into the active pane.
         const activeSplit = this.splits[this.activeSplitIndex];
         if (activeSplit) {
             await activeSplit.setSession(sessionId);
+            if (this.app) this.app.currentClaudeSessionId = sessionId;
+            this.scheduleRefit();
+            this.saveState();
         }
     }
 

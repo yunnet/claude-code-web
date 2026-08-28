@@ -711,8 +711,15 @@ class SessionTabManager {
 
         this.updateOverflowMenu();
 
-        // If tile view is enabled, tabs target the active pane (VS Code-style)
-        await this.claudeInterface.joinSession(sessionId);
+        // In split mode the tab targets the active pane (VS Code-style). Do NOT
+        // join the main terminal: it is hidden (collapsed to ~10x5) and joining it
+        // would resize the shared PTY to that tiny size, blanking the panes.
+        const app = this.claudeInterface;
+        if (app && app.splitContainer && app.splitContainer.enabled) {
+            await app.splitContainer.onTabSwitch(sessionId);
+        } else {
+            await app.joinSession(sessionId);
+        }
         this.updateHeaderInfo(sessionId);
     }
     
