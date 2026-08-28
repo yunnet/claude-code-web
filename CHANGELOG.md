@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.20.2] - 2026-08-28
+
+### Added
+- **Resizable file explorer.** Drag the left edge of the file drawer to make it
+  wider or narrower (clamped 300px..95vw); the chosen width persists.
+
+### Fixed
+- **Snappier file rows.** The explorer's rows used `transition: all 0.2s`, so the
+  hover highlight faded over 200ms and trailed the cursor, feeling laggy. Now an
+  80ms colour-only transition tracks the pointer.
+
 ## [3.20.1] - 2026-08-28
 
 ### Fixed
