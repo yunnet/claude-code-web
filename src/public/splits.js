@@ -551,6 +551,10 @@ class SplitContainer {
         addItem('\u5355\u5c4f', () => this.closeSplit(), !this.enabled);
         addItem('\u5de6\u53f3\u5206\u5c4f', () => this.applyPreset('horizontal'), this.enabled && this.orientation === 'horizontal');
         addItem('\u4e0a\u4e0b\u5206\u5c4f', () => this.applyPreset('vertical'), this.enabled && this.orientation === 'vertical');
+        if (this.enabled) {
+            // \u4ea4\u6362\u5de6\u53f3 (swap left/right) or \u4ea4\u6362\u4e0a\u4e0b (swap top/bottom)
+            addItem(this.orientation === 'vertical' ? '\u4ea4\u6362\u4e0a\u4e0b' : '\u4ea4\u6362\u5de6\u53f3', () => this.swapPanes(), false);
+        }
         document.body.appendChild(menu);
         const rect = anchorEl ? anchorEl.getBoundingClientRect() : { bottom: 60, left: 60 };
         menu.style.top = `${rect.bottom + 4}px`;
@@ -562,6 +566,23 @@ class SplitContainer {
             }
         };
         setTimeout(() => document.addEventListener('mousedown', close, true), 0);
+    }
+
+    // Swap the two panes' sides (left<->right, or top<->bottom) by reordering
+    // their DOM nodes. The terminals + sockets move with their elements (no
+    // reconnect), the divider position is preserved, and the splits array /
+    // click handlers stay index-correct because they map by element, not side.
+    swapPanes() {
+        if (!this.enabled || !this.splitContainerEl) return;
+        const panes = [...this.splitContainerEl.querySelectorAll('.split-pane')];
+        if (panes.length < 2) return;
+        const [first, second] = panes;
+        // Reorder to [second, divider, first].
+        this.splitContainerEl.insertBefore(second, first);
+        this.splitContainerEl.insertBefore(this.divider, first);
+        this.applyLayout();
+        this.scheduleRefit();
+        this.saveState();
     }
 
     async createSplit(sessionId, orientation) {
