@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-08-28
+
+### Added
+- **Split-view orientation (left/right + top/bottom).** The split view is now a
+  CSS grid whose orientation can be flipped between side-by-side (columns) and
+  stacked (rows). A new **Split layout** button in the tab bar opens a
+  单屏 / 左右 / 上下 menu; `Ctrl+\` enters a split; drag a tab to the terminal's
+  **right** edge for a left/right split or the **bottom** edge for a top/bottom
+  split; the divider drags along either axis; the orientation preference persists
+  in `localStorage`.
+
+### Fixed
+- **Split panes now fill the pane.** The div passed to `terminal.open()` was
+  `flex:0 1 auto` and collapsed to the xterm's content height (24 rows), so the
+  CLI left the lower half of each pane blank. It now fills the pane height, and
+  after any split/resize the pane re-fits and pushes the new `cols/rows` to the
+  PTY so the CLI (a full-screen TUI) reflows to fill.
+- Entering a split no longer double-attaches the current session (main terminal +
+  pane) with two sizes fighting over the PTY resize; closing a split reliably
+  rejoins the focused pane's session.
+- The Split-layout button icon now matches the other tab-bar action icons in size.
+
 ## [3.19.0] - 2026-08-28
 
 ### Added
