@@ -8,8 +8,7 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const ClaudeBridge = require('./claude-bridge');
-const CodexBridge = require('./codex-bridge');
-const AgentBridge = require('./agent-bridge');
+const { CliBridge, codexConfig, agentConfig } = require('./cli-bridge');
 const SessionStore = require('./utils/session-store');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
@@ -45,8 +44,8 @@ class ClaudeCodeWebServer {
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
     this.webSocketConnections = new Map(); // Maps WebSocket connection ID to session info
     this.claudeBridge = new ClaudeBridge();
-    this.codexBridge = new CodexBridge();
-    this.agentBridge = new AgentBridge();
+    this.codexBridge = new CliBridge(codexConfig);
+    this.agentBridge = new CliBridge(agentConfig);
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -258,6 +257,10 @@ class ClaudeCodeWebServer {
     // plan path is a single percent-encoded segment (slashes as %2F); Express
     // decodes it back before servePlanFile resolves it.
     this.app.get('/api/plan/:token/:file', (req, res) => this.servePlanFile(req, res));
+    // Session-scoped form: the plan link carries the active session id so the
+    // allow-list uses that session's workingDir + its own planDirs (plus the
+    // global ones). `-` means "no session" (falls back to all sessions).
+    this.app.get('/api/plan/:token/:session/:file', (req, res) => this.servePlanFile(req, res));
 
     // Serve an arbitrary file for the file explorer to open in a new browser tab.
     // Like /api/plan it's a browser-navigation exception (a new tab can't send an
@@ -393,6 +396,7 @@ class ClaudeCodeWebServer {
         active: false,
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
+        planDirs: [], // per-session extra plan directories (additive to global + auto-discovery)
         connections: new Set(),
         // Flow control: connections that have asked us to pause the PTY (slow
         // renderer). The PTY stays paused while any connection is in this set.
@@ -1477,22 +1481,34 @@ class ClaudeCodeWebServer {
     }
 
     // Allowed roots are the UNION of two sets (additive, not override):
-    //  • auto roots — the base folder plus every active session's working dir;
-    //    a file here must also sit under a `.claude/plans/` segment (so we serve
-    //    the current project's plans automatically without serving arbitrary md).
-    //  • configured plan dirs (`this.planDirs`, from --plans-dir or the runtime
-    //    /api/plan-dirs setting) — any `.md` under them, no segment requirement
-    //    (the user opted these dirs in explicitly).
+    //  • auto roots — the base folder plus session working dir(s); a file here
+    //    must also sit under a `.claude/plans/` segment (so we serve the current
+    //    project's plans automatically without serving arbitrary md).
+    //  • plan dirs — the global `this.planDirs` (--plans-dir / runtime) plus, when
+    //    the request names a session, that session's own `planDirs` — any `.md`
+    //    under them, no segment requirement.
+    // The `/api/plan/:token/:session/:file` route scopes to one session (its
+    // workingDir + its planDirs). The 2-segment route (or `-`) has no session, so
+    // it falls back to every active session's workingDir (global planDirs only).
+    const scoped = params.session && params.session !== '-'
+      ? this.claudeSessions.get(params.session)
+      : null;
     const autoRoots = [this.baseFolder];
-    for (const s of this.claudeSessions.values()) {
-      if (s && s.workingDir) autoRoots.push(s.workingDir);
+    const planDirsForReq = this.planDirs.slice();
+    if (scoped) {
+      if (scoped.workingDir) autoRoots.push(scoped.workingDir);
+      if (Array.isArray(scoped.planDirs)) planDirsForReq.push(...scoped.planDirs);
+    } else {
+      for (const s of this.claudeSessions.values()) {
+        if (s && s.workingDir) autoRoots.push(s.workingDir);
+      }
     }
     const realAutoRoots = [];
     for (const r of autoRoots) {
       try { realAutoRoots.push(fs.realpathSync(r)); } catch (_) { /* skip unreadable root */ }
     }
     const realPlanDirs = [];
-    for (const r of this.planDirs) {
+    for (const r of planDirsForReq) {
       try { realPlanDirs.push(fs.realpathSync(r)); } catch (_) { /* skip */ }
     }
     const under = (real, roots) => roots.some((rr) => real === rr || real.startsWith(rr + path.sep));
@@ -1501,7 +1517,7 @@ class ClaudeCodeWebServer {
     // Relative paths are resolved against every candidate root.
     const candidates = path.isAbsolute(raw)
       ? [raw]
-      : [...autoRoots, ...this.planDirs].map((r) => path.join(r, raw));
+      : [...autoRoots, ...planDirsForReq].map((r) => path.join(r, raw));
     for (const cand of candidates) {
       try {
         const real = fs.realpathSync(cand);
@@ -1682,37 +1698,38 @@ class ClaudeCodeWebServer {
     return null;
   }
 
-  // Persist the current plan dirs (atomic temp+rename). Best-effort; never throws.
-  savePlanDirs() {
-    try {
-      const file = this.planDirsFile();
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.planDirs, null, 2));
-      fs.renameSync(tmp, file);
-    } catch (e) {
-      if (this.dev) console.warn('Failed to persist plan dirs:', e.message);
-    }
-  }
-
-  // GET /api/plan-dirs — the configured plan dirs plus the active session roots
-  // (already auto-covered; returned so the UI can show what's implicitly served).
+  // GET /api/plan-dirs?sessionId= — that session's own plan dirs, plus the global
+  // dirs (shared base, read-only in the UI) and the session's working dir (already
+  // auto-covered). Per-session so each tab configures its own extra directories.
   getPlanDirs(req, res) {
-    const sessionRoots = [];
-    for (const s of this.claudeSessions.values()) {
-      if (s && s.workingDir) sessionRoots.push(s.workingDir);
-    }
-    res.json({ dirs: this.planDirs, sessionRoots });
+    const session = this.claudeSessions.get(req.query.sessionId);
+    if (!session) return res.status(400).json({ error: 'unknown or missing sessionId' });
+    res.json({
+      dirs: Array.isArray(session.planDirs) ? session.planDirs : [],
+      globalDirs: this.planDirs,
+      sessionRoots: session.workingDir ? [session.workingDir] : []
+    });
   }
 
-  // POST /api/plan-dirs { dirs: string[] } — replace the configured plan dirs.
+  // POST /api/plan-dirs { sessionId, dirs } — replace that session's plan dirs.
   // Each entry must resolve (realpath) to an existing directory; invalid ones are
-  // reported in `rejected` and dropped. The accepted list is deduped and persisted.
-  // This only registers directories to allow-list; reading still goes through
+  // reported in `rejected` and dropped. Deduped and persisted with the session.
+  // Only registers directories to the allow-list; reads still go through
   // servePlanFile's realpath check, so no arbitrary-path read is introduced.
   setPlanDirs(req, res) {
-    const input = req.body && Array.isArray(req.body.dirs) ? req.body.dirs : null;
-    if (!input) return res.status(400).json({ error: 'dirs must be an array' });
+    const body = req.body || {};
+    const session = this.claudeSessions.get(body.sessionId);
+    if (!session) return res.status(400).json({ error: 'unknown or missing sessionId' });
+    if (!Array.isArray(body.dirs)) return res.status(400).json({ error: 'dirs must be an array' });
+    const { accepted, rejected } = this._validatePlanDirs(body.dirs);
+    session.planDirs = accepted;
+    this.saveSessionsToDisk();
+    res.json({ dirs: session.planDirs, globalDirs: this.planDirs, rejected });
+  }
+
+  // Validate a list of directory paths: each must realpath to an existing dir.
+  // Returns { accepted: realpaths (deduped), rejected: [{dir, reason}] }.
+  _validatePlanDirs(input) {
     const accepted = [];
     const rejected = [];
     const seen = new Set();
@@ -1726,9 +1743,7 @@ class ClaudeCodeWebServer {
         rejected.push({ dir: d, reason: 'not found' });
       }
     }
-    this.planDirs = accepted;
-    this.savePlanDirs();
-    res.json({ dirs: this.planDirs, rejected });
+    return { accepted, rejected };
   }
 
   broadcastToSession(claudeSessionId, data) {

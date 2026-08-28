@@ -190,7 +190,7 @@
         <div class="settings-modal" id="settingsModal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Settings</h2>
+                    <h2 id="settingsTitle">Settings</h2>
                     <button class="close-btn" id="closeSettingsBtn">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -412,38 +412,11 @@
     <script src="icons.js"></script>
     <script src="app.js"></script>
     
-    <!-- Theme controls: persist the Settings theme choice and reload so both the
-         CSS chrome and the xterm terminal (whose theme is read at creation) apply
-         it consistently. The Settings modal's Save button was previously unwired. -->
-    <script>
-      (function() {
-        function readSettings() {
-          try { return JSON.parse(localStorage.getItem('cc-web-settings') || '{}'); }
-          catch (_) { return {}; }
-        }
-        function initThemeControls() {
-          const sel = document.getElementById('themeSelect');
-          const save = document.getElementById('saveSettingsBtn');
-          if (sel) sel.value = readSettings().theme === 'light' ? 'light' : 'dark';
-          if (save) {
-            save.addEventListener('click', function() {
-              const theme = (sel && sel.value === 'light') ? 'light' : 'dark';
-              const s = readSettings();
-              if (s.theme === theme) return; // no change → let other handlers run
-              s.theme = theme;
-              localStorage.setItem('cc-web-settings', JSON.stringify(s));
-              // Reload so the early theme script + terminal creation both pick it up.
-              window.location.reload();
-            });
-          }
-        }
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', initThemeControls);
-        } else {
-          initThemeControls();
-        }
-      })();
-    </script>
+    <!-- Theme is applied live (no reload) and PER SESSION by app.js
+         (showSettings populates the select; saveSettings/applyTheme flip
+         `data-theme` and re-theme every xterm). The early <head> script sets the
+         initial theme for first paint from the global default. -->
+
 
     <!-- Service Worker Registration -->
     <script>

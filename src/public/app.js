@@ -347,7 +347,7 @@ class ClaudeCodeWebInterface {
             // itself with its own inertia, and animating each step there makes the
             // viewport lag behind the finger. Desktop value is user-configurable
             // via Settings (0 = instant / no damping).
-            smoothScrollDuration: isMobile ? 0 : this.loadSettings().smoothScrollDuration,
+            smoothScrollDuration: isMobile ? 0 : this.loadSettings(this.currentClaudeSessionId).smoothScrollDuration,
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
@@ -377,7 +377,7 @@ class ClaudeCodeWebInterface {
         this.terminal.open(document.getElementById('terminal'));
 
         // Make plan-file paths in output clickable (open the .md in a new tab).
-        registerPlanLinks(this.terminal);
+        registerPlanLinks(this.terminal, () => this.currentClaudeSessionId);
 
         // Renderer (must load after open()). Prefer WebGL — it's markedly faster
         // than canvas/DOM under Claude Code's heavy full-screen repaints, which is
@@ -1080,6 +1080,7 @@ class ClaudeCodeWebInterface {
             case 'session_created':
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
+                this.applySessionVisuals(message.sessionId); // per-session visual settings
                 this.updateWorkingDir(message.workingDir);
                 this.updateSessionButton(message.sessionName);
                 this.loadSessions();
@@ -1097,9 +1098,10 @@ class ClaudeCodeWebInterface {
                 console.log('[session_joined] Message received, active:', message.active, 'tabs:', this.sessionTabManager?.tabs.size);
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
+                this.applySessionVisuals(message.sessionId); // per-session visual settings
                 this.updateWorkingDir(message.workingDir);
                 this.updateSessionButton(message.sessionName);
-                
+
                 // Update tab status
                 if (this.sessionTabManager) {
                     this.sessionTabManager.updateTabStatus(message.sessionId, message.active ? 'active' : 'idle');
@@ -1655,7 +1657,14 @@ class ClaudeCodeWebInterface {
             document.body.style.overflow = 'hidden';
         }
         
-        const settings = this.loadSettings();
+        // Make it clear these settings apply to the ACTIVE session.
+        const title = document.getElementById('settingsTitle');
+        if (title) {
+            const name = this.currentClaudeSessionId ? (this.currentClaudeSessionName || 'this session') : null;
+            title.textContent = name ? `Settings — ${name}` : 'Settings';
+        }
+
+        const settings = this.loadSettings(this.currentClaudeSessionId);
         document.getElementById('fontSize').value = settings.fontSize;
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
@@ -1681,24 +1690,35 @@ class ClaudeCodeWebInterface {
     // Fetch the server's configured plan dirs (+ auto-covered session roots) and
     // render them in Settings. Server-side state, so it's read fresh each open.
     async loadPlanDirsUI() {
+        const list = document.getElementById('planDirsList');
+        const sid = this.currentClaudeSessionId;
+        if (!sid) {
+            if (list) { list.innerHTML = ''; list.appendChild(this._planDirNote('Start a session to configure its plan directories.')); }
+            return;
+        }
         try {
-            const res = await this.authFetch('/api/plan-dirs');
+            const res = await this.authFetch('/api/plan-dirs?sessionId=' + encodeURIComponent(sid));
             if (!res.ok) return;
             this.renderPlanDirs(await res.json());
         } catch (_) { /* best-effort */ }
+    }
+
+    _planDirNote(text) {
+        const el = document.createElement('div');
+        el.className = 'plan-dir-row plan-dir-empty';
+        el.textContent = text;
+        return el;
     }
 
     renderPlanDirs(data) {
         const list = document.getElementById('planDirsList');
         if (!list) return;
         const dirs = (data && data.dirs) || [];
+        const globalDirs = (data && data.globalDirs) || [];
         const sessionRoots = (data && data.sessionRoots) || [];
         list.innerHTML = '';
         if (!dirs.length) {
-            const empty = document.createElement('div');
-            empty.className = 'plan-dir-row plan-dir-empty';
-            empty.textContent = 'No extra directories.';
-            list.appendChild(empty);
+            list.appendChild(this._planDirNote('No extra directories for this session.'));
         } else {
             for (const dir of dirs) {
                 const row = document.createElement('div');
@@ -1717,20 +1737,37 @@ class ClaudeCodeWebInterface {
                 list.appendChild(row);
             }
         }
+        // Global dirs (shared base, read-only here — set via --plans-dir).
+        for (const dir of globalDirs) {
+            const row = document.createElement('div');
+            row.className = 'plan-dir-row plan-dir-global';
+            const p = document.createElement('span');
+            p.className = 'plan-dir-path';
+            p.textContent = dir;
+            p.title = dir;
+            const tag = document.createElement('span');
+            tag.className = 'plan-dir-tag';
+            tag.textContent = 'global';
+            row.appendChild(p);
+            row.appendChild(tag);
+            list.appendChild(row);
+        }
         // Only refresh the hint when we have session roots (i.e. from the GET,
         // not from a POST response which omits them).
         const hint = document.getElementById('planDirsHint');
         if (hint && sessionRoots.length) {
-            hint.textContent = "The current project's .claude/plans is always available. Auto-covered now: " + sessionRoots.join(', ');
+            hint.textContent = "This session's .claude/plans is always available. Auto-covered: " + sessionRoots.join(', ');
         }
     }
 
     async postPlanDirs(dirs) {
+        const sid = this.currentClaudeSessionId;
+        if (!sid) return null;
         try {
             const res = await this.authFetch('/api/plan-dirs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ dirs })
+                body: JSON.stringify({ sessionId: sid, dirs })
             });
             if (!res.ok) return null;
             return await res.json();
@@ -1761,7 +1798,11 @@ class ClaudeCodeWebInterface {
         if (data) this.renderPlanDirs(data);
     }
 
-    loadSettings() {
+    // Visual settings are PER-SESSION: keyed by sessionId in localStorage. A new
+    // session (no stored entry) inherits the global default (`cc-web-settings`),
+    // which tracks the most recently saved settings — so your latest preferences
+    // become the default for new sessions while each existing session keeps its own.
+    loadSettings(sessionId) {
         const defaults = {
             fontSize: 14,
             showTokenStats: true,
@@ -1771,10 +1812,13 @@ class ClaudeCodeWebInterface {
             // touch-momentum handler drives scrolling).
             smoothScrollDuration: 100
         };
-        
         try {
-            const saved = localStorage.getItem('cc-web-settings');
-            return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+            if (sessionId) {
+                const map = JSON.parse(localStorage.getItem('cc-web-session-settings') || '{}');
+                if (map && map[sessionId]) return { ...defaults, ...map[sessionId] };
+            }
+            const global = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+            return { ...defaults, ...global };
         } catch (error) {
             console.error('Failed to load settings:', error);
             return defaults;
@@ -1788,9 +1832,16 @@ class ClaudeCodeWebInterface {
             theme: (document.getElementById('themeSelect')?.value) || 'dark',
             smoothScrollDuration: parseInt(document.getElementById('smoothScroll')?.value ?? 100)
         };
-        
         try {
+            // Update the global default (latest wins → new sessions inherit it).
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            // And store as the active session's own settings.
+            const sid = this.currentClaudeSessionId;
+            if (sid) {
+                const map = JSON.parse(localStorage.getItem('cc-web-session-settings') || '{}');
+                map[sid] = settings;
+                localStorage.setItem('cc-web-session-settings', JSON.stringify(map));
+            }
             this.applySettings(settings);
             this.hideSettings();
         } catch (error) {
@@ -1798,28 +1849,45 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    // Apply a settings object live (no reload) to the main terminal + splits.
     applySettings(settings) {
-        // Token stats bar removed - no longer needed
-        // Apply theme (dark is default; light sets attribute)
-        if (settings.theme === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
-        } else {
-            document.documentElement.removeAttribute('data-theme');
-        }
-
+        this.applyTheme(settings.theme);
         this.terminal.options.fontSize = settings.fontSize;
-
-        // Live-apply scroll animation to the main terminal and every split.
-        // Mobile keeps 0 (its touch handler owns scrolling).
         const scrollDur = this.isMobile ? 0 : settings.smoothScrollDuration;
         this.terminal.options.smoothScrollDuration = scrollDur;
         if (this.splitContainer && this.splitContainer.splits) {
             this.splitContainer.splits.forEach((sp) => {
-                if (sp && sp.terminal) sp.terminal.options.smoothScrollDuration = scrollDur;
+                if (sp && sp.terminal) {
+                    sp.terminal.options.smoothScrollDuration = scrollDur;
+                    sp.terminal.options.fontSize = settings.fontSize;
+                }
             });
         }
-
         this.fitTerminal();
+    }
+
+    // Live theme switch (no page reload): flip the `data-theme` attribute (CSS
+    // chrome) and re-apply the xterm palette to every terminal.
+    applyTheme(theme) {
+        if (theme === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+        }
+        const t = (typeof getTerminalTheme === 'function') ? getTerminalTheme() : null;
+        if (t) {
+            this.terminal.options.theme = t;
+            if (this.splitContainer && this.splitContainer.splits) {
+                this.splitContainer.splits.forEach((sp) => {
+                    if (sp && sp.terminal) sp.terminal.options.theme = t;
+                });
+            }
+        }
+    }
+
+    // Apply a session's stored visual settings when it becomes the active tab.
+    applySessionVisuals(sessionId) {
+        this.applySettings(this.loadSettings(sessionId));
     }
 
     startHeartbeat() {

@@ -230,9 +230,10 @@ class AuthManager {
     // string) — that's what browser Markdown extensions trigger on. The token
     // rides the path because a new-tab navigation can't send an Authorization
     // header. `-` is a placeholder token for the no-auth case (server ignores it).
-    getPlanUrl(planPath) {
+    getPlanUrl(planPath, sessionId) {
         const token = this.token ? encodeURIComponent(this.token) : '-';
-        return `/api/plan/${token}/${encodeURIComponent(planPath)}`;
+        const sid = sessionId ? encodeURIComponent(sessionId) : '-';
+        return `/api/plan/${token}/${sid}/${encodeURIComponent(planPath)}`;
     }
 
     // URL to open an arbitrary file (the file explorer) in a new tab, same path

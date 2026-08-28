@@ -36,6 +36,7 @@ class SessionStore {
                 created: session.created || new Date(),
                 lastActivity: session.lastActivity || new Date(),
                 workingDir: session.workingDir || process.cwd(),
+                planDirs: Array.isArray(session.planDirs) ? session.planDirs : [],
                 // Whether Claude has been started under this session id (bound via
                 // --session-id). Lets a restart resume the conversation instead of
                 // starting fresh. loadSessions restores it via the `...session` spread.

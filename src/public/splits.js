@@ -47,7 +47,7 @@ function getTerminalTheme() {
 // user can review it (e.g. with a browser markdown extension). Shared by the main
 // terminal (app.js) and split terminals. Read-only: it inspects buffer text to
 // place links and never writes to the PTY stream.
-function registerPlanLinks(term) {
+function registerPlanLinks(term, getSessionId) {
     if (!term || typeof term.registerLinkProvider !== 'function') return;
     // Paths containing `.claude/plans/` and ending in `.md` (relative or absolute).
     // The leading segment is restricted to path-legal ASCII so a label glued to
@@ -74,9 +74,10 @@ function registerPlanLinks(term) {
                     text: matched,
                     activate() {
                         try {
+                            const sid = (typeof getSessionId === 'function') ? getSessionId() : null;
                             const url = (window.authManager && window.authManager.getPlanUrl)
-                                ? window.authManager.getPlanUrl(matched)
-                                : `/api/plan/-/${encodeURIComponent(matched)}`;
+                                ? window.authManager.getPlanUrl(matched, sid)
+                                : `/api/plan/-/${sid ? encodeURIComponent(sid) : '-'}/${encodeURIComponent(matched)}`;
                             window.open(url, '_blank', 'noopener');
                         } catch (_) { /* ignore */ }
                     }
@@ -155,7 +156,7 @@ class Split {
         this.terminal.open(terminalDiv);
 
         // Make plan-file paths in output clickable (open the .md in a new tab).
-        registerPlanLinks(this.terminal);
+        registerPlanLinks(this.terminal, () => this.sessionId);
 
         // Canvas renderer (match main terminal), with DOM fallback.
         try {
