@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.20.3] - 2026-08-28
+
+### Added
+- **Swap split panes.** While split, the layout menu offers 交换左右 / 交换上下 to
+  swap the two panes' sides. It reorders the DOM nodes (no reconnect) and keeps
+  the divider ratio, so content swaps sides while widths stay put.
+
 ## [3.20.2] - 2026-08-28
 
 ### Added
