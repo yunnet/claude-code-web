@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.20.1] - 2026-08-28
+
+### Fixed
+- **Clicking a tab while split no longer blanks the panes.** In split mode the
+  tab bar routed through the hidden main terminal's `joinSession`; the hidden
+  terminal collapses to ~10x5, so joining it resized the shared PTY to 10
+  columns and the CLI redrew as garbage. A tab click now routes straight to the
+  panes (focus the pane already showing that session, else load it into the
+  active pane) and never re-attaches the hidden main terminal.
+
 ## [3.20.0] - 2026-08-28
 
 ### Added
