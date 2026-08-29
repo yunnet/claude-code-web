@@ -1145,7 +1145,7 @@ class ClaudeCodeWebServer {
             // Feed the circuit breaker: a non-zero exit within a few seconds of
             // start counts as a rapid failure; anything else clears the streak.
             const c = (code && typeof code === 'object') ? code.exitCode : code;
-            const quick = currentSession._startAt && (Date.now() - currentSession._startAt) < 6000;
+            const quick = currentSession._startAt && (Date.now() - currentSession._startAt) < 12000;
             if (c !== 0 && quick) {
               currentSession._startFails = currentSession._startFails || { count: 0, last: 0 };
               currentSession._startFails.count++;

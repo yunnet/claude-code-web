@@ -137,6 +137,7 @@ class ClaudeBridge {
       let fellBack = false;
       let trustPromptHandled = false;
       let inUseNoted = false;
+      let phantomRecovered = false;
       let dataBuffer = '';
 
       const session = {
@@ -202,6 +203,27 @@ class ClaudeBridge {
             return; // swallow the failed-resume exit; fresh process takes over
           }
 
+          // Phantom self-heal: a fresh launch that dies fast on "already in use"
+          // means the id is registered but empty (an interrupted start left only a
+          // bridge-session line — resume found no conversation, fresh can't claim
+          // it). Delete that empty transcript and retry fresh once so the session
+          // just works instead of getting stuck.
+          const looksInUse = inUseNoted || dataBuffer.toLowerCase().includes('already in use');
+          if (mode === 'fresh' && !phantomRecovered && code !== 0 && (Date.now() - launchedAt) < 8000 && looksInUse) {
+            phantomRecovered = true;
+            if (this.clearEmptyTranscript(sessionId, workingDir)) {
+              launchedAt = Date.now();
+              inUseNoted = false;
+              dataBuffer = '';
+              const old = session.process;
+              console.log(`Cleared empty phantom transcript for ${sessionId}; retrying fresh`);
+              session.process = spawnClaude('fresh');
+              wire(session.process);
+              if (old && old !== session.process) { try { old.kill(); } catch (_) {} }
+              return; // swallow this exit; the retried process takes over
+            }
+          }
+
           console.log(`Claude session ${sessionId} exited with code ${code}, signal ${sig}`);
           if (session.killTimeout) {
             clearTimeout(session.killTimeout);
@@ -260,6 +282,30 @@ class ClaudeBridge {
   // tool_input.plan. argv strings are single-quote escaped; token/session are
   // uuids so there is no shell-injection risk. Extracted so it is unit-testable
   // without spawning a PTY.
+  // Delete an EMPTY Claude transcript for this session id (only a bridge-session
+  // metadata line, no user/assistant turns) so a stuck "already in use" id can be
+  // reclaimed with --session-id. Safe: it only removes a tiny file with no real
+  // conversation. Globs across project dirs so we don't depend on the dir-encoding.
+  clearEmptyTranscript(sessionId, workingDir) {
+    try {
+      const os = require('os');
+      const root = path.join(os.homedir(), '.claude', 'projects');
+      if (!fs.existsSync(root)) return false;
+      for (const proj of fs.readdirSync(root)) {
+        const f = path.join(root, proj, `${sessionId}.jsonl`);
+        if (!fs.existsSync(f)) continue;
+        const st = fs.statSync(f);
+        if (st.size >= 4096) continue; // real conversations are far bigger
+        const content = fs.readFileSync(f, 'utf8');
+        if (/"type"\s*:\s*"(user|assistant)"/.test(content)) continue; // has real turns
+        fs.unlinkSync(f);
+        try { fs.rmSync(path.join(os.homedir(), '.claude', 'session-env', sessionId), { recursive: true, force: true }); } catch (_) {}
+        return true;
+      }
+    } catch (_) { /* best-effort */ }
+    return false;
+  }
+
   buildInjectedSettings(sessionId, { hookScript = '', hookPort = 0, hookToken = '' } = {}) {
     const settings = { preferredNotifChannel: 'terminal_bell' };
     if (hookScript && hookPort && hookToken) {
