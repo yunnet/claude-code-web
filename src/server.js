@@ -1475,9 +1475,16 @@ class ClaudeCodeWebServer {
       }
     }
 
-    const raw = params.file !== undefined ? params.file : req.query.path;
+    let raw = params.file !== undefined ? params.file : req.query.path;
     if (typeof raw !== 'string' || raw.length === 0 || raw.indexOf('\0') !== -1) {
       return res.status(404).json({ error: 'Not found' });
+    }
+    // Claude prints home-relative plan paths with a leading ~ (e.g.
+    // ~/proj/.claude/plans/x.md), so the clickable link carries that ~. Expand it
+    // to an absolute path here; otherwise it's treated as relative and joined
+    // under the roots as `<root>/~/...`, which never exists (404).
+    if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~' + path.sep)) {
+      raw = path.join(require('os').homedir(), raw.slice(1));
     }
 
     // Allowed roots are the UNION of two sets (additive, not override):
