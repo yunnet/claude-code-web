@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [3.20.6] - 2026-08-29
+
+### Fixed
+- **No more start→exit→restart loop on a stuck session.** A session id that can
+  neither `--resume` nor be claimed with `--session-id` (a phantom from an
+  interrupted start) made Claude exit immediately and the UI kept retrying. A
+  server-side circuit breaker now stops after 3 rapid post-start exits and shows a
+  clear error (create a new session) instead of looping.
+
 ## [3.20.5] - 2026-08-29
 
 ### Added
