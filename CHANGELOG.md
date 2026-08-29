@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.20.4] - 2026-08-29
+
+### Changed
+- **Swap split panes by reordering tabs** instead of a menu item. Dragging a tab
+  now swaps the panes to match the tab order; the redundant 交换左右/交换上下 layout-menu
+  item is removed.
+
 ## [3.20.3] - 2026-08-28
 
 ### Added
