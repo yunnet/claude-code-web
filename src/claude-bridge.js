@@ -136,6 +136,7 @@ class ClaudeBridge {
       let launchedAt = Date.now();
       let fellBack = false;
       let trustPromptHandled = false;
+      let inUseNoted = false;
       let dataBuffer = '';
 
       const session = {
@@ -165,6 +166,13 @@ class ClaudeBridge {
           if (mode === 'resume' && !fellBack && dataBuffer.includes('No conversation found')) {
             triggerFallback('no conversation found');
             return; // swallow the failed-resume output; fresh process takes over
+          }
+          // Fresh launch collided with a still-registered session id (a phantom
+          // left by an interrupted start). Explain it once; the circuit breaker
+          // on the server side stops the retry loop.
+          if (mode === 'fresh' && !inUseNoted && dataBuffer.toLowerCase().includes('already in use')) {
+            inUseNoted = true;
+            onOutput('\r\n\x1b[33mThis session id is already in use (a stuck/phantom session). If it keeps failing, create a new session.\x1b[0m\r\n');
           }
           if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
             trustPromptHandled = true;

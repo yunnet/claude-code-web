@@ -1087,6 +1087,20 @@ class ClaudeCodeWebServer {
     // Capture the session ID to avoid closure issues
     const sessionId = wsInfo.claudeSessionId;
 
+    // Circuit breaker: if Claude keeps exiting right after starting (e.g. a stuck
+    // session id that can neither --resume nor be claimed with --session-id fresh),
+    // stop the start->exit->restart loop and surface a clear, actionable error.
+    const fails = session._startFails;
+    if (fails && fails.count >= 3 && (Date.now() - fails.last) < 20000) {
+      const alias = (this.aliases && this.aliases.claude) || 'Claude';
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        message: `${alias} 反复瞬间退出，已停止自动重试（该会话 id 可能被占用或已损坏）。请新建一个会话。`
+      });
+      return;
+    }
+    session._startAt = Date.now();
+
     // Per-session secret for the hook relay endpoint. Generated once and reused
     // across resumes so the injected hook command stays valid for the session.
     if (!session.hookToken) session.hookToken = uuidv4();
@@ -1128,6 +1142,17 @@ class ClaudeCodeWebServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) {
             currentSession.active = false;
+            // Feed the circuit breaker: a non-zero exit within a few seconds of
+            // start counts as a rapid failure; anything else clears the streak.
+            const c = (code && typeof code === 'object') ? code.exitCode : code;
+            const quick = currentSession._startAt && (Date.now() - currentSession._startAt) < 6000;
+            if (c !== 0 && quick) {
+              currentSession._startFails = currentSession._startFails || { count: 0, last: 0 };
+              currentSession._startFails.count++;
+              currentSession._startFails.last = Date.now();
+            } else {
+              currentSession._startFails = { count: 0, last: 0 };
+            }
           }
           this.broadcastToSession(sessionId, {
             type: 'exit',
