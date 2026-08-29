@@ -82,7 +82,7 @@ class ClaudeCodeWebInterface {
         
         // Initialize the session tab manager and wait for sessions to load
         this.sessionTabManager = new SessionTabManager(this);
-        await this.sessionTabManager.init();
+        const reconcile = await this.sessionTabManager.init();
         
         // Initialize split container
         if (window.SplitContainer) {
@@ -95,30 +95,24 @@ class ClaudeCodeWebInterface {
             this.showModeSwitcher();
         }
         
-        // Check if there are existing sessions
-        console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
-        if (this.sessionTabManager.tabs.size > 0) {
-            console.log('[Init] Found sessions, switching to first tab...');
-            // Sessions exist - switch to the first one (this will handle connecting)
-            const firstTabId = this.sessionTabManager.tabs.keys().next().value;
-            console.log('[Init] Switching to tab:', firstTabId);
-            await this.sessionTabManager.switchToTab(firstTabId);
-
+        // Session restore. reconcileSessions decided one of:
+        //  - conflict: the persisted tab set doesn't match the server → let the
+        //    user pick which sessions to open (no silent adopt / no auto-create).
+        //  - adopted/restored: tabs are already built; join the chosen active one.
+        //  - nothing at all: first run → folder picker to create the first session.
+        if (reconcile && reconcile.mode === 'conflict') {
+            this.hideOverlay();
+            this.showSessionReconcileModal(reconcile);
+        } else if (this.sessionTabManager.tabs.size > 0) {
+            const activeId = (reconcile && reconcile.activeId) || this.sessionTabManager.tabs.keys().next().value;
+            await this.sessionTabManager.switchToTab(activeId);
             // Hide the loading overlay now that we've joined a session — but keep
             // the "Start Claude" restart prompt visible when the joined session's
-            // Claude process has stopped (session_joined shows startPrompt in that
-            // case; without this guard we'd hide it and leave no button to click).
+            // Claude process has stopped.
             const startPromptVisible = document.getElementById('startPrompt')?.style.display === 'block';
-            if (!startPromptVisible) {
-                console.log('[Init] About to hide overlay');
-                this.hideOverlay();
-                console.log('[Init] Overlay should be hidden now');
-            } else {
-                console.log('[Init] Stopped session — keeping restart prompt visible');
-            }
+            if (!startPromptVisible) this.hideOverlay();
         } else {
-            console.log('[Init] No sessions found, showing folder browser');
-            // No sessions - hide loading overlay and show folder picker to create first session
+            // No sessions anywhere - show the folder picker to create the first one.
             this.hideOverlay();
             this.showFolderBrowser();
         }
@@ -1336,12 +1330,29 @@ class ClaudeCodeWebInterface {
         return opts;
     }
 
+    // When a Start is requested but currentClaudeSessionId is momentarily null
+    // (e.g. it fired during a refresh before session_joined landed), adopt the
+    // already-selected tab instead of spawning a stray NEW session. Returns the
+    // session id to start on, or null when there is genuinely no session/tab (the
+    // caller then creates one).
+    resolveStartSession() {
+        if (this.currentClaudeSessionId) return this.currentClaudeSessionId;
+        const stm = this.sessionTabManager;
+        const activeTab = stm && stm.activeTabId;
+        if (activeTab && stm.tabs.has(activeTab)) {
+            this.currentClaudeSessionId = activeTab;
+            this.send({ type: 'join_session', sessionId: activeTab });
+            return activeTab;
+        }
+        return null;
+    }
+
     startClaudeSession(options = {}) {
         // Require a project directory before starting — otherwise it would run in
         // the launch/home directory. Prompt for a folder first if none is chosen.
         if (this.ensureProjectFolder('claude', options)) return;
         // If no session, create one first
-        if (!this.currentClaudeSessionId) {
+        if (!this.resolveStartSession()) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
             this.send({ 
                 type: 'create_session',
@@ -1366,7 +1377,7 @@ class ClaudeCodeWebInterface {
     startCodexSession(options = {}) {
         if (this.ensureProjectFolder('codex', options)) return;
         // If no session, create one first
-        if (!this.currentClaudeSessionId) {
+        if (!this.resolveStartSession()) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
             this.send({
                 type: 'create_session',
@@ -1391,7 +1402,7 @@ class ClaudeCodeWebInterface {
     startAgentSession(options = {}) {
         if (this.ensureProjectFolder('agent', options)) return;
         // If no session, create one first
-        if (!this.currentClaudeSessionId) {
+        if (!this.resolveStartSession()) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
             this.send({
                 type: 'create_session',
@@ -2372,7 +2383,82 @@ class ClaudeCodeWebInterface {
             sessionList.appendChild(sessionItem);
         });
     }
-    
+
+    // Reconcile picker: shown on refresh only when the persisted tab set doesn't
+    // match the server. Lists every server session; the user checks which to open
+    // as tabs, picks the active one, can delete strays, or create a new session.
+    showSessionReconcileModal(reconcile) {
+        const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const { server = [], persisted = { ids: [], activeId: null }, dead = [], extra = [] } = reconcile || {};
+        const persistedIds = new Set(persisted.ids);
+        document.querySelectorAll('.session-reconcile-modal').forEach((m) => m.remove());
+        const modal = document.createElement('div');
+        modal.className = 'session-modal active session-reconcile-modal';
+        const rows = server.map((sv) => {
+            const checked = persistedIds.has(sv.id) ? 'checked' : '';
+            const isActive = sv.id === persisted.activeId;
+            const folder = sv.workingDir ? sv.workingDir.split('/').filter(Boolean).pop() : '';
+            const statusText = sv.active ? this.getAlias('claude') + ' 运行中' : '空闲';
+            return `
+            <div class="session-item reconcile-row" data-id="${esc(sv.id)}">
+              <input type="checkbox" class="rc-open" ${checked}>
+              <div class="session-details">
+                <div class="session-name">${esc(sv.name)}</div>
+                <div class="session-meta"><span class="dot ${sv.active ? 'dot-on' : 'dot-idle'}"></span> ${esc(statusText)}${folder ? ' · ' + esc(folder) : ''}</div>
+              </div>
+              <label class="rc-current" title="设为当前"><input type="radio" name="rc-active" value="${esc(sv.id)}" ${isActive ? 'checked' : ''}> 当前</label>
+              <button class="btn-icon rc-del" title="删除会话">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>`;
+        }).join('');
+        const notes = [];
+        if (dead.length) notes.push(`${dead.length} 个原标签的会话已不存在，将移除。`);
+        if (extra.length) notes.push(`检测到 ${extra.length} 个新会话，勾选以打开。`);
+        modal.innerHTML = `
+          <div class="modal-content">
+            <div class="modal-header"><h2>会话对账</h2></div>
+            <p class="rc-note">标签与服务端会话不一致，请选择要打开的会话：</p>
+            ${notes.map((n) => `<p class="rc-note">${esc(n)}</p>`).join('')}
+            <div class="session-list">${rows || '<div class="no-sessions">无会话</div>'}</div>
+            <div class="modal-actions">
+              <button class="btn btn-secondary" id="rcNew">＋ 新建会话</button>
+              <button class="btn btn-primary" id="rcConfirm">确认</button>
+            </div>
+          </div>`;
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.rc-del').forEach((btn) => btn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const row = btn.closest('.reconcile-row');
+            const id = row && row.dataset.id;
+            if (id && confirm('删除该会话？此操作不可恢复。')) { this.deleteSession(id); row.remove(); }
+        }));
+        modal.querySelector('#rcNew').addEventListener('click', () => { modal.remove(); this.showFolderBrowser(); });
+        modal.querySelector('#rcConfirm').addEventListener('click', async () => {
+            const rowsEls = [...modal.querySelectorAll('.reconcile-row')];
+            const chosen = rowsEls.filter((r) => r.querySelector('.rc-open').checked).map((r) => r.dataset.id);
+            const activeRadio = modal.querySelector('input[name="rc-active"]:checked');
+            let activeId = activeRadio ? activeRadio.value : (chosen[0] || null);
+            if (activeId && !chosen.includes(activeId)) activeId = chosen[0] || null;
+            modal.remove();
+            const stm = this.sessionTabManager;
+            const byId = new Map(server.map((s) => [s.id, s]));
+            // Keep the persisted order for surviving ids, then append newly-chosen ones.
+            const ordered = [...persisted.ids.filter((id) => chosen.includes(id)), ...chosen.filter((id) => !persisted.ids.includes(id))];
+            ordered.forEach((id) => { const sv = byId.get(id); if (sv) stm.addTab(sv.id, sv.name, sv.active ? 'active' : 'idle', sv.workingDir, false); });
+            // Sessions still on the server but left unchecked = seen-but-not-opened;
+            // remember them so a later refresh doesn't re-prompt for the same ones.
+            const chosenSet = new Set(chosen);
+            // rowsEls was captured before modal.remove(); deleted rows are already
+            // gone from it. Remaining-but-unchecked rows = seen-but-not-opened.
+            const ignoredIds = rowsEls.map((r) => r.dataset.id).filter((id) => !chosenSet.has(id));
+            stm.saveTabState(ignoredIds);
+            if (activeId) { await stm.switchToTab(activeId); this.hideOverlay(); }
+            else { this.hideOverlay(); this.showFolderBrowser(); }
+        });
+    }
+
     async loadSessions() {
         try {
             const response = await this.authFetch('/api/sessions/list');

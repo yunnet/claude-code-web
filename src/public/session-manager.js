@@ -203,6 +203,40 @@ class SessionTabManager {
             .filter(Boolean);
     }
 
+    // Persist the exact tab set (ordered session-ids + which is active) so a
+    // refresh can reconcile against the server and restore 1:1 instead of
+    // adopting whatever the server happens to list (which caused stray/misordered
+    // tabs). See reconcileSessions().
+    saveTabState(ignoredIds) {
+        try {
+            const ids = this.getOrderedTabIds();
+            // ignoredIds = server sessions the user has seen but chose not to open,
+            // so a refresh doesn't re-prompt for them. Preserve across tab ops;
+            // opening one un-ignores it.
+            let ignored = Array.isArray(ignoredIds) ? ignoredIds : ((this.loadTabState() || {}).ignoredIds || []);
+            ignored = ignored.filter(id => !ids.includes(id));
+            localStorage.setItem('cc-web-tabs', JSON.stringify({
+                ids,
+                activeId: this.activeTabId || null,
+                ignoredIds: ignored
+            }));
+        } catch (_) { /* storage disabled */ }
+    }
+
+    loadTabState() {
+        try {
+            const raw = localStorage.getItem('cc-web-tabs');
+            if (!raw) return null;
+            const st = JSON.parse(raw);
+            if (!st || !Array.isArray(st.ids)) return null;
+            return {
+                ids: st.ids.filter(Boolean),
+                activeId: st.activeId || null,
+                ignoredIds: Array.isArray(st.ignoredIds) ? st.ignoredIds.filter(Boolean) : []
+            };
+        } catch (_) { return null; }
+    }
+
     syncOrderFromDom() {
         const tabsContainer = document.getElementById('tabsContainer');
         if (!tabsContainer) return;
@@ -212,6 +246,7 @@ class SessionTabManager {
         if (ids.length) {
             this.tabOrder = ids;
         }
+        this.saveTabState();
     }
 
     ensureTabVisible(sessionId) {
@@ -245,13 +280,63 @@ class SessionTabManager {
         this.setupTabBar();
         this.setupKeyboardShortcuts();
         this.setupOverflowDropdown();
-        await this.loadSessions();
+        const reconcile = await this.reconcileSessions();
         this.updateTabOverflow();
         
         // Show notification permission prompt after a slight delay
         setTimeout(() => {
             this.checkAndPromptForNotifications();
         }, 2000);
+        return reconcile;
+    }
+
+    // Reconcile the persisted tab set against the server's session list on load.
+    //  - no memory (first run): adopt whatever the server lists.
+    //  - exact match (no missing/extra ids): restore the tabs 1:1 (order + active).
+    //  - mismatch: return { mode:'conflict', ... } so the app can prompt the user
+    //    to pick which sessions to open (instead of silently adopting strays or,
+    //    worse, auto-creating a new session on a refresh race).
+    async reconcileSessions() {
+        let server = [];
+        try {
+            const authHeaders = window.authManager ? window.authManager.getAuthHeaders() : {};
+            const res = await fetch('/api/sessions/list', { headers: authHeaders });
+            const data = await res.json();
+            server = data.sessions || [];
+        } catch (error) {
+            console.error('reconcileSessions: failed to load sessions', error);
+        }
+        const byId = new Map(server.map(s => [s.id, s]));
+        const serverIds = server.map(s => s.id);
+        const addTabsFor = (ids) => ids.forEach(id => {
+            const sv = byId.get(id);
+            if (sv) this.addTab(sv.id, sv.name, sv.active ? 'active' : 'idle', sv.workingDir, false);
+        });
+
+        // No sessions on the server at all → let init show the folder picker
+        // (create the first session), never an empty reconcile modal.
+        if (serverIds.length === 0) {
+            this.saveTabState();
+            return { mode: 'adopted', server: [], activeId: null };
+        }
+
+        const persisted = this.loadTabState();
+        if (!persisted || persisted.ids.length === 0) {
+            addTabsFor(serverIds);
+            this.saveTabState();
+            return { mode: 'adopted', server, activeId: serverIds[0] || null };
+        }
+
+        const ignored = new Set((persisted.ignoredIds || []).filter(id => byId.has(id)));
+        const dead = persisted.ids.filter(id => !byId.has(id));
+        const extra = serverIds.filter(id => !persisted.ids.includes(id) && !ignored.has(id));
+        if (dead.length === 0 && extra.length === 0) {
+            addTabsFor(persisted.ids);
+            const activeId = byId.has(persisted.activeId) ? persisted.activeId : persisted.ids[0];
+            this.saveTabState();
+            return { mode: 'restored', server, activeId };
+        }
+        return { mode: 'conflict', server, persisted, dead, extra };
     }
     
     checkAndPromptForNotifications() {
@@ -660,6 +745,7 @@ class SessionTabManager {
         if (!this.tabOrder.includes(sessionId)) {
             this.tabOrder.push(sessionId);
         }
+        this.saveTabState();
 
         // Store session data with timestamp and activity tracking
         this.activeSessions.set(sessionId, {
@@ -696,6 +782,7 @@ class SessionTabManager {
         if (!tab) return;
         tab.classList.add('active');
         this.activeTabId = sessionId;
+        this.saveTabState();
         this.ensureTabVisible(sessionId);
 
         // Update last accessed timestamp and clear unread indicator
@@ -768,6 +855,7 @@ class SessionTabManager {
         this.activeSessions.delete(sessionId);
         this.tabOrder = orderedIds.filter(id => id !== sessionId);
         this.removeFromHistory(sessionId);
+        this.saveTabState();
 
         // Update overflow on mobile
         this.updateTabOverflow();

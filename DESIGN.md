@@ -309,6 +309,7 @@ docs/                    GitHub Pages 营销站点（与本设计文档无关）
 
 `session-manager.js`：`tabs`/`activeSessions`/`tabOrder`/`tabHistory`。
 - `loadSessions` 拉 `/api/sessions/list` 建标签；`addTab` 建可拖拽 `.session-tab`（点击切换、双击重命名、中键/关闭按钮关闭、右键菜单）。
+- **刷新对账**（`reconcileSessions` + `saveTabState`/`loadTabState`）：前端把 tab 集合（有序 `ids` + `activeId` + 已忽略 `ignoredIds`）存 `localStorage['cc-web-tabs']`。刷新时与服务端会话集对账——**完全一致**则 1:1 恢复（顺序+选中，无缝、不弹窗、绝不自动新建）；**不一致**（tab 指向的会话没了 = dead，或出现没见过的会话 = extra）则弹 `showSessionReconcileModal` 让用户勾选打开哪些/删除/新建；被忽略的 extra 记入 `ignoredIds` 不再重复弹。首个会话或服务端为空时走文件夹选择。取代了旧的"无脑采纳服务端全部会话 + 竞态误建"逻辑。
 - `switchToTab` → `joinSession`。
 - 状态机 `updateTabStatus`（active/idle/error/unread/pulse）；`markSessionActivity` 有输出置 active，90s 无输出判定“完成”并标未读 + 通知，5 分钟判 idle。
 - **移动溢出**：宽度 ≤768 只显示前 2 个标签，其余进 `#tabOverflowMenu`。
@@ -327,7 +328,7 @@ docs/                    GitHub Pages 营销站点（与本设计文档无关）
 
 - `showFolderBrowser`/`loadFolders`/`renderFolders`（`app.js:1401-1492`）：GET `/api/folders`，渲染子目录，符号链接显示 `↗`。
 - **启动前置选目录**：`needsFolderSelection`（无目录、或目录等于 baseFolder/homeDir/`/` 时为真）→ `ensureProjectFolder`（`app.js:1237-1246`）在 `startClaudeSession` 等入口调用；需要选目录时记 `pendingStart={kind,options}` 并打开文件夹浏览器，返回 true 让调用方中止。选目录 → 建会话 → `session_joined` 时**自动启动挂起的助手**（`app.js:924-932`），避免二次选择。
-- `start{Claude,Codex,Agent}Session`：无会话则先 `create_session`（延迟 500ms）再发 `start_*` 并附 `termDims()`。
+- `start{Claude,Codex,Agent}Session`：先 `resolveStartSession()`——`currentClaudeSessionId` 为空时优先采纳当前选中的 tab（join 之）而非新建（防刷新竞态误建）；确实无会话/无 tab 才 `create_session`（延迟 500ms）再发 `start_*` 并附 `termDims()`。
 
 ### 6.7 客户端鉴权（AuthManager）
 

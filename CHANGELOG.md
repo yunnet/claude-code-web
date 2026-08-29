@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- **Refresh reconciles sessions instead of auto-adopting/creating.** The client now
+  persists its tab set (ordered session-ids + active, + dismissed ids) in
+  `localStorage['cc-web-tabs']`. On refresh it reconciles against the server: an
+  exact match restores the tabs 1:1 (seamless, no prompt, never a stray new
+  session); a mismatch (a tab's session is gone, or a session the user hasn't seen
+  appeared) opens a picker to choose which sessions to open / delete / start new.
+  Dismissed sessions are remembered so they don't re-prompt. Fixes refresh-time
+  "new session created / tab shows the wrong content".
+
 ## [3.20.7] - 2026-08-29
 
 ### Fixed
