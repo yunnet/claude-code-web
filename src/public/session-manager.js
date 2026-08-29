@@ -348,6 +348,11 @@ class SessionTabManager {
                     this.syncOrderFromDom();
                     this.updateTabOverflow();
                     this.updateOverflowMenu();
+                    // Swapping the tab order swaps the split panes' sides too.
+                    const app = this.claudeInterface;
+                    if (app && app.splitContainer && typeof app.splitContainer.syncPaneOrderToTabs === 'function') {
+                        app.splitContainer.syncPaneOrderToTabs(this.tabOrder);
+                    }
                 }
             });
             

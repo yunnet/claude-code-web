@@ -551,10 +551,6 @@ class SplitContainer {
         addItem('\u5355\u5c4f', () => this.closeSplit(), !this.enabled);
         addItem('\u5de6\u53f3\u5206\u5c4f', () => this.applyPreset('horizontal'), this.enabled && this.orientation === 'horizontal');
         addItem('\u4e0a\u4e0b\u5206\u5c4f', () => this.applyPreset('vertical'), this.enabled && this.orientation === 'vertical');
-        if (this.enabled) {
-            // \u4ea4\u6362\u5de6\u53f3 (swap left/right) or \u4ea4\u6362\u4e0a\u4e0b (swap top/bottom)
-            addItem(this.orientation === 'vertical' ? '\u4ea4\u6362\u4e0a\u4e0b' : '\u4ea4\u6362\u5de6\u53f3', () => this.swapPanes(), false);
-        }
         document.body.appendChild(menu);
         const rect = anchorEl ? anchorEl.getBoundingClientRect() : { bottom: 60, left: 60 };
         menu.style.top = `${rect.bottom + 4}px`;
@@ -583,6 +579,23 @@ class SplitContainer {
         this.applyLayout();
         this.scheduleRefit();
         this.saveState();
+    }
+
+    // Make the panes' left/right (or top/bottom) order follow the tab bar order.
+    // Called after the user drags a tab to reorder it: if the two paned sessions'
+    // relative order in the tab bar flipped, swap the panes to match.
+    syncPaneOrderToTabs(tabOrder) {
+        if (!this.enabled || !Array.isArray(tabOrder) || !this.splitContainerEl) return;
+        const paneEls = [...this.splitContainerEl.querySelectorAll('.split-pane')];
+        const paneSessions = paneEls.map(el => {
+            const sp = this.splits.find(s => s.container === el);
+            return sp ? sp.sessionId : null;
+        });
+        if (paneSessions.length < 2 || !paneSessions[0] || !paneSessions[1]) return;
+        const iFirst = tabOrder.indexOf(paneSessions[0]);
+        const iSecond = tabOrder.indexOf(paneSessions[1]);
+        if (iFirst === -1 || iSecond === -1) return;
+        if (iFirst > iSecond) this.swapPanes();
     }
 
     async createSplit(sessionId, orientation) {
