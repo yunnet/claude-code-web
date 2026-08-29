@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.20.7] - 2026-08-29
+
+### Fixed
+- **Stuck sessions self-heal.** A session whose id got registered but empty (an
+  interrupted start) used to loop on start/exit or hit the circuit breaker; the
+  bridge now clears that empty transcript and retries fresh so the session starts.
+
 ## [3.20.6] - 2026-08-29
 
 ### Fixed
