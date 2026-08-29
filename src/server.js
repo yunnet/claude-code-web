@@ -1624,16 +1624,23 @@ class ClaudeCodeWebServer {
       const stat = fs.statSync(real);
       if (!stat.isFile()) return res.status(404).json({ error: 'Not found' });
       if (stat.size > 10 * 1024 * 1024) return res.status(413).json({ error: 'File too large' });
+      const ext = path.extname(real).toLowerCase();
+      if (ext === '.html' || ext === '.htm' || ext === '.svg') {
+        // Render the page/graphic instead of showing source, but sandbox it into
+        // an opaque origin: its scripts can run (so diagrams draw) yet cannot read
+        // this origin's auth token / localStorage / cookies. No allow-same-origin.
+        res.setHeader('Content-Security-Policy', 'sandbox allow-scripts allow-popups;');
+      }
       return this.sendInlineFile(res, real, this.contentTypeForFile(real), fs.readFileSync(real));
     } catch (_) {
       return res.status(404).json({ error: 'Not found' });
     }
   }
 
-  // Pick a Content-Type from the file extension. SVG and HTML are served as
-  // text/plain on purpose: rendered as their real type in a top-level navigation
-  // they can run script on this origin and read the auth token from sessionStorage.
-  // Showing their source is the safe, still-useful behavior for a file viewer.
+  // Pick a Content-Type from the file extension. HTML and SVG render as their
+  // real type (so the explorer shows the rendered page/diagram, not source), but
+  // serveFile sandboxes them via a CSP so their scripts run in an opaque origin
+  // and cannot read this origin's auth token / storage.
   contentTypeForFile(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     const images = {
@@ -1642,12 +1649,14 @@ class ClaudeCodeWebServer {
     };
     const textExts = [
       '.txt', '.log', '.md', '.markdown', '.json', '.js', '.mjs', '.cjs', '.ts', '.tsx',
-      '.jsx', '.css', '.scss', '.less', '.html', '.htm', '.xml', '.svg', '.yml', '.yaml',
+      '.jsx', '.css', '.scss', '.less', '.xml', '.yml', '.yaml',
       '.sh', '.bash', '.zsh', '.py', '.rb', '.go', '.rs', '.java', '.kt', '.c', '.h',
       '.cc', '.cpp', '.hpp', '.cs', '.php', '.pl', '.lua', '.r', '.ini', '.conf', '.cfg',
       '.toml', '.env', '.sql', '.csv', '.tsv', '.gitignore', '.dockerfile', '.makefile'
     ];
     if (ext === '.pdf') return 'application/pdf';
+    if (ext === '.html' || ext === '.htm') return 'text/html; charset=utf-8';
+    if (ext === '.svg') return 'image/svg+xml';
     if (images[ext]) return images[ext];
     if (textExts.includes(ext)) return 'text/plain; charset=utf-8';
     return 'application/octet-stream';
