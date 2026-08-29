@@ -633,6 +633,14 @@ class SplitContainer {
         // Push correct pane dimensions to both PTYs once layout + sockets settle.
         this.scheduleRefit();
 
+        // Keep the panes' left/right order consistent with the tab bar order, so
+        // the tab labels always match the pane on that side (createSplit puts the
+        // *current* session on the left, which may be the 2nd tab).
+        const stm = this.app && this.app.sessionTabManager;
+        if (stm && typeof stm.getOrderedTabIds === 'function') {
+            this.syncPaneOrderToTabs(stm.getOrderedTabIds());
+        }
+
         // Focus right split (newly created)
         this.focusSplit(1);
 
