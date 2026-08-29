@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.20.5] - 2026-08-29
+
+### Added
+- **Explorer renders HTML/SVG** (sandboxed) instead of showing source, so diagram
+  pages open as the rendered page/graphic.
+
+### Fixed
+- **Plan links with a `~` path** now resolve (the leading ~ is expanded to home).
+- **Split panes match the tab bar order** on entry, so tab labels line up with the
+  left/right content.
+
 ## [3.20.4] - 2026-08-29
 
 ### Changed
