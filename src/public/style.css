@@ -1708,6 +1708,37 @@ body {
     to { transform: translateX(0); }
 }
 
+/* The drawer is full-height, so its list should fill it. The 400px cap and the
+   card's bottom padding come from the centered folder picker that shares this
+   markup; in the drawer they left the list clipped mid-row with a large empty
+   band beneath it. Scoped to the drawer so the picker keeps its card look. */
+#fileExplorerModal .folder-browser-body {
+    padding-bottom: 0;
+}
+#fileExplorerModal .folder-list-container {
+    max-height: none;
+    min-height: 0;
+}
+/* "Show hidden items" becomes a bar flush with the bottom edge (the negative
+   side margins cancel the body's padding) instead of floating above it. */
+#fileExplorerModal .folder-browser-footer {
+    margin: 0 -20px;
+    padding: 14px 20px;
+}
+
+/* The shared mobile modal rules treat this as a padded, top-anchored card. The
+   drawer is a full-height panel, so that 10px padding pushed its bottom (and the
+   "Show hidden items" bar with it) off the bottom of the screen. */
+@media (max-width: 768px) {
+    #fileExplorerModal {
+        padding: 0;
+        overflow: hidden;
+    }
+    #fileExplorerModal .folder-browser-content {
+        max-height: 100vh;
+    }
+}
+
 /* Non-interactive note rows in the explorer (empty folder / truncated notice):
    muted text, and no click-affordance hover accent. */
 .folder-empty,
