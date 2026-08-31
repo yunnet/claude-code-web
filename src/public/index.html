@@ -154,10 +154,10 @@
                     <p>Connecting to Claude Code...</p>
                 </div>
                 <div class="start-prompt" id="startPrompt" style="display: none;">
-                    <h2>Choose Your Assistant</h2>
-                    <p>Select one to start in this directory.</p>
+                    <h2>Start Claude</h2>
+                    <p>Choose a model and permission mode, then start in this directory.</p>
                     <!-- Claude launch options: map to `claude --model` and
-                         `--permission-mode`. Ignored by Codex/Cursor starts. -->
+                         `--permission-mode`. -->
                     <div class="start-options" id="claudeStartOptions">
                         <label class="start-option">
                             <span>Model</span>
@@ -208,10 +208,6 @@
                             <option value="dark">Dark</option>
                             <option value="light">Light</option>
                         </select>
-                    </div>
-                    <div class="setting-group">
-                        <label for="showTokenStats">Show Token Stats:</label>
-                        <input type="checkbox" id="showTokenStats" checked>
                     </div>
                     <div class="setting-group">
                         <label for="smoothScroll">Scroll animation:</label>

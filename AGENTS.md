@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - bin/cc-web.js: CLI entry; parses flags and starts the server.
 - src/server.js: Express + WebSocket server, routes, session wiring.
-- src/claude-bridge.js and src/codex-bridge.js: spawn and manage CLI sessions via node-pty.
+- src/claude-bridge.js: spawns and manages Claude CLI sessions via node-pty.
 - src/utils/: helpers (auth token handling, session persistence).
 - src/public/: browser UI assets (HTML/JS/CSS) served by the server.
 - test/*.test.js: Mocha unit tests for bridges/utilities.

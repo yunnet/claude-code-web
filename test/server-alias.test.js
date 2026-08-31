@@ -14,24 +14,24 @@ describe('Server Aliases', function() {
     server = null;
   });
 
-  it('should set aliases from options', function() {
+  it('should set the alias from options', function() {
     server = new ClaudeCodeWebServer({
       claudeAlias: 'Buddy',
-      codexAlias: 'Robo',
-      agentAlias: 'Helper',
       noAuth: true // avoid auth middleware complexity
     });
 
     assert.strictEqual(server.aliases.claude, 'Buddy');
-    assert.strictEqual(server.aliases.codex, 'Robo');
-    assert.strictEqual(server.aliases.agent, 'Helper');
   });
 
-  it('should default aliases when not provided', function() {
+  it('should default the alias when not provided', function() {
     server = new ClaudeCodeWebServer({ noAuth: true });
     assert.ok(server.aliases.claude && server.aliases.claude.length > 0);
-    assert.ok(server.aliases.codex && server.aliases.codex.length > 0);
-    assert.ok(server.aliases.agent && server.aliases.agent.length > 0);
+  });
+
+  // Codex/cursor-agent support was removed in 3.21.0; nothing should reintroduce
+  // an alias for a CLI this server can no longer launch.
+  it('carries no alias for a CLI that can no longer be started', function() {
+    server = new ClaudeCodeWebServer({ noAuth: true });
+    assert.deepStrictEqual(Object.keys(server.aliases), ['claude']);
   });
 });
-

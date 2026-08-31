@@ -67,19 +67,15 @@ describe('start circuit breaker', function() {
     assert.strictEqual(server.startCircuitOpen(session), false);
   });
 
-  it('names the refusing agent by its configured alias, for every bridge', function() {
-    server.aliases = { claude: 'Buddy', codex: 'Robo', agent: 'Kitty' };
+  it('names Claude by its configured alias when refusing', function() {
+    server.aliases = { claude: 'Buddy' };
     const sent = [];
-    const wsInfo = { ws: {} };
     server.sendToWebSocket = (ws, msg) => sent.push(msg);
 
-    server.refuseStart(wsInfo, 'claude');
-    server.refuseStart(wsInfo, 'codex');
-    server.refuseStart(wsInfo, 'agent');
+    server.refuseStart({ ws: {} });
 
-    assert.deepStrictEqual(sent.map(m => m.type), ['error', 'error', 'error']);
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].type, 'error');
     assert.ok(sent[0].message.startsWith('Buddy '), sent[0].message);
-    assert.ok(sent[1].message.startsWith('Robo '), sent[1].message);
-    assert.ok(sent[2].message.startsWith('Kitty '), sent[2].message);
   });
 });

@@ -19,15 +19,13 @@ class ClaudeCodeWebInterface {
         this.planDetector = null;
         this.planModal = null;
         // Aliases for assistants (populated from /api/config)
-        this.aliases = { claude: 'Claude', codex: 'Codex' };
+        this.aliases = { claude: 'Claude' };
         
         
         // Initialize the session tab manager
         this.sessionTabManager = null;
         
         // Usage stats
-        this.usageStats = null;
-        this.usageUpdateTimer = null;
         this.sessionStats = null;
         this.sessionTimer = null;
         this.sessionTimerInterval = null;
@@ -136,10 +134,7 @@ class ClaudeCodeWebInterface {
             if (res.ok) {
                 const cfg = await res.json();
                 if (cfg?.aliases) {
-                    this.aliases = {
-                        claude: cfg.aliases.claude || 'Claude',
-                        codex: cfg.aliases.codex || 'Codex'
-                    };
+                    this.aliases = { claude: cfg.aliases.claude || 'Claude' };
                 }
                 if (typeof cfg.folderMode === 'boolean') {
                     this.folderMode = cfg.folderMode;
@@ -167,32 +162,20 @@ class ClaudeCodeWebInterface {
         } catch (_) { /* best-effort */ }
     }
 
-    getAlias(kind) {
-        if (this.aliases && this.aliases[kind]) {
-            return this.aliases[kind];
-        }
-        // Default aliases
-        if (kind === 'codex') return 'Codex';
-        if (kind === 'agent') return 'Cursor';
-        return 'Claude';
+    getAlias() {
+        return (this.aliases && this.aliases.claude) || 'Claude';
     }
 
     applyAliasesToUI() {
         // Start prompt buttons
         const startBtn = document.getElementById('startBtn');
         const dangerousSkipBtn = document.getElementById('dangerousSkipBtn');
-        const startCodexBtn = document.getElementById('startCodexBtn');
-        const dangerousCodexBtn = document.getElementById('dangerousCodexBtn');
-        const startAgentBtn = document.getElementById('startAgentBtn');
-        if (startBtn) startBtn.textContent = `Start ${this.getAlias('claude')}`;
-        if (dangerousSkipBtn) dangerousSkipBtn.textContent = `Dangerous ${this.getAlias('claude')}`;
-        if (startCodexBtn) startCodexBtn.textContent = `Start ${this.getAlias('codex')}`;
-        if (dangerousCodexBtn) dangerousCodexBtn.textContent = `Dangerous ${this.getAlias('codex')}`;
-        if (startAgentBtn) startAgentBtn.textContent = `Start ${this.getAlias('agent')}`;
+        if (startBtn) startBtn.textContent = `Start ${this.getAlias()}`;
+        if (dangerousSkipBtn) dangerousSkipBtn.textContent = `Dangerous ${this.getAlias()}`;
 
         // Plan modal title
         const planTitle = document.querySelector('#planModal .modal-header h2');
-        if (planTitle) planTitle.innerHTML = `<span class=\"icon\" aria-hidden=\"true\">${window.icons?.clipboard?.(18) || ''}</span> ${this.getAlias('claude')}'s Plan`;
+        if (planTitle) planTitle.innerHTML = `<span class=\"icon\" aria-hidden=\"true\">${window.icons?.clipboard?.(18) || ''}</span> ${this.getAlias()}'s Plan`;
     }
     
     detectMobile() {
@@ -546,7 +529,7 @@ class ClaudeCodeWebInterface {
         try {
             if (document.hidden && 'Notification' in window) {
                 if (Notification.permission === 'granted') {
-                    new Notification(`${this.getAlias('claude')} needs your attention`);
+                    new Notification(`${this.getAlias()} needs your attention`);
                 } else if (Notification.permission !== 'denied') {
                     Notification.requestPermission();
                 }
@@ -600,7 +583,7 @@ class ClaudeCodeWebInterface {
     // path into the terminal input so Claude Code picks it up as an image.
     async uploadAndInsertImage(file) {
         if (!this.currentClaudeSessionId) {
-            this.showToast('请先启动 Claude 再贴图', true);
+            this.showToast('Start Claude before pasting an image', true);
             return;
         }
         try {
@@ -610,15 +593,15 @@ class ClaudeCodeWebInterface {
             );
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                this.showToast(data.error || '图片上传失败', true);
+                this.showToast(data.error || 'Image upload failed', true);
                 return;
             }
             // Inject the absolute path (+trailing space) as if typed. No newline:
             // the user adds their prompt and sends it themselves.
             this.send({ type: 'input', data: data.path + ' ' });
-            this.showToast('已插入图片');
+            this.showToast('Image inserted');
         } catch (err) {
-            this.showToast('图片上传失败', true);
+            this.showToast('Image upload failed', true);
         }
     }
 
@@ -852,9 +835,6 @@ class ClaudeCodeWebInterface {
     setupUI() {
         const startBtn = document.getElementById('startBtn');
         const dangerousSkipBtn = document.getElementById('dangerousSkipBtn');
-        const startCodexBtn = document.getElementById('startCodexBtn');
-        const dangerousCodexBtn = document.getElementById('dangerousCodexBtn');
-        const startAgentBtn = document.getElementById('startAgentBtn');
         const explorerBtn = document.getElementById('explorerBtn');
         const retryBtn = document.getElementById('retryBtn');
         
@@ -864,9 +844,6 @@ class ClaudeCodeWebInterface {
         
         if (startBtn) startBtn.addEventListener('click', () => this.startClaudeSession(this.claudeStartOptions()));
         if (dangerousSkipBtn) dangerousSkipBtn.addEventListener('click', () => this.startClaudeSession({ ...this.claudeStartOptions(), dangerouslySkipPermissions: true }));
-        if (startCodexBtn) startCodexBtn.addEventListener('click', () => this.startCodexSession());
-        if (dangerousCodexBtn) dangerousCodexBtn.addEventListener('click', () => this.startCodexSession({ dangerouslySkipPermissions: true }));
-        if (startAgentBtn) startAgentBtn.addEventListener('click', () => this.startAgentSession());
         // Desktop file-explorer button (replaced the old Settings gear; Settings
         // stays reachable from the hamburger menu). The explorer lives in
         // file-explorer.js and exposes window.fileExplorer.
@@ -913,7 +890,6 @@ class ClaudeCodeWebInterface {
         const saveBtn = document.getElementById('saveSettingsBtn');
         const fontSizeSlider = document.getElementById('fontSize');
         const fontSizeValue = document.getElementById('fontSizeValue');
-        const showTokenStatsCheckbox = document.getElementById('showTokenStats');
 
         closeBtn.addEventListener('click', () => this.hideSettings());
         saveBtn.addEventListener('click', () => this.saveSettings());
@@ -1147,14 +1123,11 @@ class ClaudeCodeWebInterface {
                     // Don't auto-focus to avoid focus tracking sequences
                     // User can click to focus when ready
                 } else if (this.pendingStart) {
-                    // The user already chose an assistant before picking a folder;
-                    // start it now in the newly-created session (no second prompt).
-                    const { kind, options } = this.pendingStart;
+                    // The user hit Start before picking a folder; start now in the
+                    // newly-created session instead of prompting a second time.
+                    const { options } = this.pendingStart;
                     this.pendingStart = null;
-                    console.log('[session_joined] Auto-starting pending assistant:', kind);
-                    if (kind === 'codex') this.startCodexSession(options);
-                    else if (kind === 'agent') this.startAgentSession(options);
-                    else this.startClaudeSession(options);
+                    this.startClaudeSession(options);
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
@@ -1168,7 +1141,7 @@ class ClaudeCodeWebInterface {
                         // For existing sessions where Claude has stopped, show start prompt
                         // This allows the user to restart Claude in the same session
                         this.flushTerminalWrites();
-                        this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
+                        this.terminal.writeln(`\r\n\x1b[33m${this.getAlias()} has stopped in this session. Click "Start ${this.getAlias()}" to restart.\x1b[0m`);
                         this.showOverlay('startPrompt');
                     }
                 }
@@ -1198,26 +1171,8 @@ class ClaudeCodeWebInterface {
                 // Don't auto-focus to avoid focus tracking sequences
                 // User can click to focus when ready
                 this.loadSessions(); // Refresh session list
-                // Request usage stats to start tracking session usage
-                this.requestUsageStats();
-                
+
                 // Update tab status to active
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
-            case 'codex_started':
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
-            case 'agent_started':
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
                 }
@@ -1225,22 +1180,10 @@ class ClaudeCodeWebInterface {
                 
             case 'claude_stopped':
                 this.flushTerminalWrites();
-                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} stopped\x1b[0m`);
+                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias()} stopped\x1b[0m`);
                 // Show start prompt to allow restarting Claude in this session
                 this.showOverlay('startPrompt');
                 this.loadSessions(); // Refresh session list
-                break;
-            case 'codex_stopped':
-                this.flushTerminalWrites();
-                this.terminal.writeln(`\r\n\x1b[33mCodex Code stopped\x1b[0m`);
-                this.showOverlay('startPrompt');
-                this.loadSessions();
-                break;
-            case 'agent_stopped':
-                this.flushTerminalWrites();
-                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('agent')} stopped\x1b[0m`);
-                this.showOverlay('startPrompt');
-                this.loadSessions();
                 break;
                 
             case 'output':
@@ -1256,7 +1199,7 @@ class ClaudeCodeWebInterface {
                 
             case 'exit':
                 this.flushTerminalWrites();
-                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
+                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias()} exited with code ${message.code}\x1b[0m`);
                 
                 // Mark session as error if non-zero exit code
                 if (this.sessionTabManager && this.currentClaudeSessionId && message.code !== 0) {
@@ -1307,25 +1250,13 @@ class ClaudeCodeWebInterface {
                 }
                 break;
 
-            case 'usage_update':
-                this.updateUsageDisplay(
-                    message.sessionStats, 
-                    message.dailyStats, 
-                    message.sessionTimer,
-                    message.analytics,
-                    message.burnRate,
-                    message.plan,
-                    message.limits
-                );
-                break;
-                
             default:
                 console.log('Unknown message type:', message.type);
         }
     }
 
     // Read the Claude launch options (model / permission mode) chosen in the
-    // "Choose Your Assistant" modal. Empty values are omitted so Claude uses its
+    // start prompt. Empty values are omitted so Claude uses its
     // own defaults. Passed through to `claude --model` / `--permission-mode`.
     claudeStartOptions() {
         const opts = {};
@@ -1377,12 +1308,16 @@ class ClaudeCodeWebInterface {
         await pending;
     }
 
-    // Shared start path for all three bridges: resolve/create the session, then
-    // send the bridge's start message. Extracted so the join/start ordering fix
-    // lives in one place instead of three copies that can drift apart.
-    async startAssistantSession(startType, options, loadingText) {
+    async startClaudeSession(options = {}) {
+        // Require a project directory before starting — otherwise it would run in
+        // the launch/home directory. Prompt for a folder first if none is chosen.
+        if (this.ensureProjectFolder(options)) return;
+
         this.showOverlay('loadingSpinner');
-        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+        document.getElementById('loadingSpinner').querySelector('p').textContent =
+            options.dangerouslySkipPermissions
+                ? `Starting ${this.getAlias()} (skipping permissions)...`
+                : `Starting ${this.getAlias()}...`;
 
         if (!this.resolveStartSession()) {
             const sessionName = `Session ${new Date().toLocaleString()}`;
@@ -1393,36 +1328,13 @@ class ClaudeCodeWebInterface {
             });
             // Wait for session creation, then start
             setTimeout(() => {
-                this.send({ type: startType, options, ...this.termDims() });
+                this.send({ type: 'start_claude', options, ...this.termDims() });
             }, 500);
             return;
         }
         // Don't race the join we may have just issued (see resolveStartSession).
         await this.awaitPendingStartJoin();
-        this.send({ type: startType, options, ...this.termDims() });
-    }
-
-    startClaudeSession(options = {}) {
-        // Require a project directory before starting — otherwise it would run in
-        // the launch/home directory. Prompt for a folder first if none is chosen.
-        if (this.ensureProjectFolder('claude', options)) return;
-        const loadingText = options.dangerouslySkipPermissions ?
-            `Starting ${this.getAlias('claude')} (skipping permissions)...` :
-            `Starting ${this.getAlias('claude')}...`;
-        return this.startAssistantSession('start_claude', options, loadingText);
-    }
-
-    startCodexSession(options = {}) {
-        if (this.ensureProjectFolder('codex', options)) return;
-        const loadingText = options.dangerouslySkipPermissions ?
-            `Starting ${this.getAlias('codex')} (bypassing approvals and sandbox)...` :
-            `Starting ${this.getAlias('codex')}...`;
-        return this.startAssistantSession('start_codex', options, loadingText);
-    }
-
-    startAgentSession(options = {}) {
-        if (this.ensureProjectFolder('agent', options)) return;
-        return this.startAssistantSession('start_agent', options, `Starting ${this.getAlias('agent')}...`);
+        this.send({ type: 'start_claude', options, ...this.termDims() });
     }
 
     clearTerminal() {
@@ -1622,13 +1534,13 @@ class ClaudeCodeWebInterface {
     // Open the folder browser to pick a project, routing the selection into the
     // new-session flow. Returns true if selection was required (caller should
     // stop and let the user choose).
-    ensureProjectFolder(kind, options) {
+    ensureProjectFolder(options) {
         if (!this.needsFolderSelection()) return false;
-        // Remember which assistant the user picked so we can auto-start it in the
-        // chosen folder — avoids making them pick the assistant a second time.
-        this.pendingStart = { kind: kind || 'claude', options: options || {} };
+        // Remember the start the user asked for so it can run in the folder they
+        // are about to choose, instead of prompting them twice.
+        this.pendingStart = { options: options || {} };
         this.isCreatingNewSession = true;
-        this.hideOverlay(); // hide the "Choose Your Assistant" prompt behind the folder browser
+        this.hideOverlay(); // hide the start prompt behind the folder browser
         this.showFolderBrowser();
         return true;
     }
@@ -1688,7 +1600,6 @@ class ClaudeCodeWebInterface {
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
-        document.getElementById('showTokenStats').checked = settings.showTokenStats;
         const ss = document.getElementById('smoothScroll');
         if (ss) {
             ss.value = settings.smoothScrollDuration;
@@ -1824,7 +1735,6 @@ class ClaudeCodeWebInterface {
     loadSettings(sessionId) {
         const defaults = {
             fontSize: 14,
-            showTokenStats: true,
             theme: 'dark',
             // Desktop wheel-scroll animation in ms. 0 = instant (snappiest);
             // higher feels smoother/heavier. Mobile always uses 0 (its own
@@ -1847,7 +1757,6 @@ class ClaudeCodeWebInterface {
     saveSettings() {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
-            showTokenStats: document.getElementById('showTokenStats').checked,
             theme: (document.getElementById('themeSelect')?.value) || 'dark',
             smoothScrollDuration: parseInt(document.getElementById('smoothScroll')?.value ?? 100)
         };
@@ -2057,7 +1966,7 @@ class ClaudeCodeWebInterface {
                     <polyline points="12 15 9 12 12 9"/>
                     <line x1="9" y1="12" x2="16" y2="12"/>
                 </svg>
-                <span class="folder-name">.. (上级目录)</span>
+                <span class="folder-name">.. (parent directory)</span>
             `;
             upItem.addEventListener('click', () => this.loadFolders(data.parentPath));
             folderList.appendChild(upItem);
@@ -2401,7 +2310,7 @@ class ClaudeCodeWebInterface {
             const checked = persistedIds.has(sv.id) ? 'checked' : '';
             const isActive = sv.id === persisted.activeId;
             const folder = sv.workingDir ? sv.workingDir.split('/').filter(Boolean).pop() : '';
-            const statusText = sv.active ? this.getAlias('claude') + ' 运行中' : '空闲';
+            const statusText = sv.active ? this.getAlias() + ' running' : 'idle';
             return `
             <div class="session-item reconcile-row" data-id="${esc(sv.id)}">
               <input type="checkbox" class="rc-open" ${checked}>
@@ -2409,24 +2318,25 @@ class ClaudeCodeWebInterface {
                 <div class="session-name">${esc(sv.name)}</div>
                 <div class="session-meta"><span class="dot ${sv.active ? 'dot-on' : 'dot-idle'}"></span> ${esc(statusText)}${folder ? ' · ' + esc(folder) : ''}</div>
               </div>
-              <label class="rc-current" title="设为当前"><input type="radio" name="rc-active" value="${esc(sv.id)}" ${isActive ? 'checked' : ''}> 当前</label>
-              <button class="btn-icon rc-del" title="删除会话">
+              <label class="rc-current" title="Make this the active session"><input type="radio" name="rc-active" value="${esc(sv.id)}" ${isActive ? 'checked' : ''}> Active</label>
+              <button class="btn-icon rc-del" title="Delete session">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>`;
         }).join('');
         const notes = [];
-        if (dead.length) notes.push(`${dead.length} 个原标签的会话已不存在，将移除。`);
-        if (extra.length) notes.push(`检测到 ${extra.length} 个新会话，勾选以打开。`);
+        const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+        if (dead.length) notes.push(`${plural(dead.length, 'tab points', 'tabs point')} at a session that no longer exists; it will be dropped.`);
+        if (extra.length) notes.push(`${plural(extra.length, 'session is', 'sessions are')} new to this browser — tick the ones to open.`);
         modal.innerHTML = `
           <div class="modal-content">
-            <div class="modal-header"><h2>会话对账</h2></div>
-            <p class="rc-note">标签与服务端会话不一致，请选择要打开的会话：</p>
+            <div class="modal-header"><h2>Restore sessions</h2></div>
+            <p class="rc-note">Your tabs don't match the sessions on the server. Choose which to open:</p>
             ${notes.map((n) => `<p class="rc-note">${esc(n)}</p>`).join('')}
-            <div class="session-list">${rows || '<div class="no-sessions">无会话</div>'}</div>
+            <div class="session-list">${rows || '<div class="no-sessions">No sessions</div>'}</div>
             <div class="modal-actions">
-              <button class="btn btn-secondary" id="rcNew">＋ 新建会话</button>
-              <button class="btn btn-primary" id="rcConfirm">确认</button>
+              <button class="btn btn-secondary" id="rcNew">+ New session</button>
+              <button class="btn btn-primary" id="rcConfirm">Open</button>
             </div>
           </div>`;
         document.body.appendChild(modal);
@@ -2435,7 +2345,7 @@ class ClaudeCodeWebInterface {
             e.preventDefault(); e.stopPropagation();
             const row = btn.closest('.reconcile-row');
             const id = row && row.dataset.id;
-            if (id && confirm('删除该会话？此操作不可恢复。')) { this.deleteSession(id, { skipConfirm: true }); row.remove(); }
+            if (id && confirm('Delete this session? This cannot be undone.')) { this.deleteSession(id, { skipConfirm: true }); row.remove(); }
         }));
         modal.querySelector('#rcNew').addEventListener('click', () => { modal.remove(); this.showFolderBrowser(); });
         modal.querySelector('#rcConfirm').addEventListener('click', async () => {
@@ -2531,9 +2441,6 @@ class ClaudeCodeWebInterface {
             
             // Send the join request
             this.send({ type: 'join_session', sessionId });
-            
-            // Request usage stats when joining a session
-            this.requestUsageStats();
             
             // Set a timeout in case the response never comes
             setTimeout(() => {
@@ -2807,231 +2714,6 @@ class ClaudeCodeWebInterface {
                 statusElement.className = 'status connected';
             }
         }
-    }
-    
-    requestUsageStats() {
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify({ type: 'get_usage' }));
-        }
-        
-        // Start periodic updates if not already running. Usage stats are
-        // expensive to compute server-side (transcript scans), so poll at a
-        // relaxed cadence and skip entirely while the tab is hidden.
-        if (!this.usageUpdateTimer) {
-            this.usageUpdateTimer = setInterval(() => {
-                if (document.hidden) return;
-                this.requestUsageStats();
-            }, 30000); // Update every 30 seconds
-        }
-    }
-
-    startSessionTimerUpdate() {
-        // Token usage timer removed - no UI elements to update
-        return;
-    }
-
-    updateUsageDisplay(sessionStats, dailyStats, sessionTimer, analytics, burnRate, plan, limits) {
-        // Token usage display removed - no UI elements to update
-        return;
-        
-        // Container is already visible by default
-        
-        // Check if mobile screen
-        const isMobile = window.innerWidth <= 768;
-        const isSmallMobile = window.innerWidth <= 480;
-        
-        // Format tokens (K/M notation)
-        const formatTokens = (tokens) => {
-            if (tokens >= 1000000) {
-                return (tokens / 1000000).toFixed(1) + 'M';
-            } else if (tokens >= 1000) {
-                return (tokens / 1000).toFixed(1) + 'K';
-            }
-            return tokens.toString();
-        };
-        
-        // Update display for current Claude session
-        // If session is expired (remainingMs === 0), still show the stats but with 0 time
-        if (sessionStats && sessionTimer && !sessionTimer.isExpired) {
-            // Show session timer - just time remaining
-            let sessionText;
-            if (sessionTimer.remainingMs > 0) {
-                const remainingHours = Math.floor(sessionTimer.remainingMs / (1000 * 60 * 60));
-                const remainingMinutes = Math.floor((sessionTimer.remainingMs % (1000 * 60 * 60)) / (1000 * 60));
-                sessionText = `${remainingHours}h ${remainingMinutes}m`;
-            } else {
-                // Session expired or no active session - show zeros
-                sessionText = '0h 0m';
-            }
-            
-            // Just show the time, no burn rate indicator in session field
-            document.getElementById('usageTitle').textContent = sessionText;
-            
-            // Display tokens - on mobile just show percentage
-            const actualTokens = sessionStats.totalTokens || 0;
-            let tokenDisplay = actualTokens.toLocaleString();
-            let percentUsed = 0;
-            
-            // Get the actual limit for custom plans (P90 based)
-            let tokenLimit = this.planLimits?.tokens;
-            if (!tokenLimit && this.currentPlan === 'custom') {
-                // Default P90 limit for custom plans
-                tokenLimit = 188026;
-            }
-            
-            if (tokenLimit) {
-                percentUsed = (actualTokens / tokenLimit) * 100;
-                // Mobile: just percentage, Desktop: full display
-                if (isMobile) {
-                    tokenDisplay = `${percentUsed.toFixed(1)}%`;
-                } else {
-                    tokenDisplay = `${actualTokens.toLocaleString()} (${percentUsed.toFixed(1)}%)`;
-                }
-                
-                // Update progress bar
-                const progressBar = document.getElementById('usageProgressBar');
-                const progressText = document.getElementById('usageProgressText');
-                const progressContainer = document.getElementById('usageProgress');
-                
-                if (progressBar && progressText && progressContainer) {
-                    progressContainer.style.display = 'block';
-                    progressBar.style.width = Math.min(100, percentUsed) + '%';
-                    progressText.textContent = percentUsed.toFixed(1) + '%';
-                    
-                    // Change color based on usage
-                    progressBar.className = 'usage-progress-bar';
-                    if (percentUsed >= 90) {
-                        progressBar.classList.add('danger');
-                    } else if (percentUsed >= 70) {
-                        progressBar.classList.add('warning');
-                    } else {
-                        progressBar.classList.add('success');
-                    }
-                }
-            }
-            document.getElementById('usageTokens').textContent = tokenDisplay;
-            
-            // Start the live timer update
-            this.startSessionTimerUpdate();
-            
-            // Format cost - CSS handles hiding on mobile
-            const cost = sessionStats.totalCost || 0;
-            const costText = cost > 0 ? `$${cost.toFixed(2)}` : '$0.00';
-            document.getElementById('usageCost').textContent = costText;
-            
-            // Show burn rate - on mobile just show icon
-            if (sessionTimer.burnRate && sessionTimer.burnRate > 0) {
-                const burnRate = Math.round(sessionTimer.burnRate);
-                let rateDisplay;
-                
-                if (isMobile) {
-                    rateDisplay = `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${burnRate}`;
-                } else {
-                    const burnRateText = `${burnRate} tok/min`;
-                    rateDisplay = `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${burnRateText}`;
-                }
-                
-                document.getElementById('usageRate').innerHTML = rateDisplay;
-                
-                // Add depletion time if available
-                if (sessionTimer.depletionTime && sessionTimer.depletionConfidence > 0.5) {
-                    const depletionDate = new Date(sessionTimer.depletionTime);
-                    const now = new Date();
-                    const minutesToDepletion = Math.max(0, (depletionDate - now) / 1000 / 60);
-                    
-                    if (minutesToDepletion < 60) {
-                        document.getElementById('usageRate').title = `Tokens depleting in ~${Math.round(minutesToDepletion)} minutes`;
-                    } else {
-                        const hoursToDepletion = Math.floor(minutesToDepletion / 60);
-                        document.getElementById('usageRate').title = `Tokens depleting in ~${hoursToDepletion}h ${Math.round(minutesToDepletion % 60)}m`;
-                    }
-                }
-            } else {
-                // Fallback to simple rate
-                const hours = sessionTimer.hours + (sessionTimer.minutes / 60) + (sessionTimer.seconds / 3600);
-                const rate = hours > 0 ? sessionStats.requests / hours : 0;
-                document.getElementById('usageRate').innerHTML = rate > 0 ? `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${rate.toFixed(1)}/h` : '-';
-            }
-            
-            // Show model distribution
-            if (sessionStats.models) {
-                const models = sessionStats.models;
-                let totalTokens = 0;
-                let opusTokens = 0;
-                let sonnetTokens = 0;
-                
-                // Calculate totals
-                for (const [model, data] of Object.entries(models)) {
-                    const modelTokens = (data.inputTokens || 0) + (data.outputTokens || 0);
-                    totalTokens += modelTokens;
-                    
-                    if (model.toLowerCase().includes('opus')) {
-                        opusTokens += modelTokens;
-                    } else if (model.toLowerCase().includes('sonnet')) {
-                        sonnetTokens += modelTokens;
-                    }
-                }
-                
-                // Calculate percentages
-                let modelText = '';
-                if (totalTokens > 0) {
-                    const opusPercent = (opusTokens / totalTokens) * 100;
-                    const sonnetPercent = (sonnetTokens / totalTokens) * 100;
-                    const isMobile = window.innerWidth <= 768;
-                    
-                    // Use short names on mobile, full names on desktop
-                    const opusName = isMobile ? 'O' : 'Opus';
-                    const sonnetName = isMobile ? 'S' : 'Sonnet';
-                    
-                    if (opusPercent > 0 && sonnetPercent > 0) {
-                        modelText = `${opusName} ${opusPercent.toFixed(0)}% / ${sonnetName} ${sonnetPercent.toFixed(0)}%`;
-                    } else if (opusPercent > 0) {
-                        modelText = `${opusName} ${opusPercent.toFixed(0)}%`;
-                    } else if (sonnetPercent > 0) {
-                        modelText = `${sonnetName} ${sonnetPercent.toFixed(0)}%`;
-                    } else {
-                        modelText = 'Unknown';
-                    }
-                } else {
-                    modelText = 'No usage';
-                }
-                
-                document.getElementById('usageModel').textContent = modelText;
-            }
-        } else {
-            // No active session or expired session - show zeros
-            const isMobile = window.innerWidth <= 768;
-            
-            document.getElementById('usageTitle').textContent = '0h 0m';
-            document.getElementById('usageTokens').textContent = isMobile ? '0%' : '0';
-            document.getElementById('usageCost').textContent = '$0.00';
-            document.getElementById('usageRate').textContent = '-';
-            document.getElementById('usageModel').textContent = 'No usage';
-            
-            // Stop the timer update
-            if (this.sessionTimerInterval) {
-                clearInterval(this.sessionTimerInterval);
-                this.sessionTimerInterval = null;
-            }
-            
-            // Hide progress bar when no session
-            const progressContainer = document.getElementById('usageProgress');
-            if (progressContainer) {
-                progressContainer.style.display = 'none';
-            }
-        }
-        
-        // Removed model breakdown and projections - compact view doesn't need them
-    }
-
-    getBurnRateIndicator(rate) {
-        // Minimalist indicator using a line chart icon and label
-        const icon = window.icons?.chartLine?.(12) || '';
-        if (rate > 1000) return `<span class="icon" aria-hidden="true">${icon}</span> Very high`;
-        if (rate > 500) return `<span class="icon" aria-hidden="true">${icon}</span> High`;
-        if (rate > 100) return `<span class="icon" aria-hidden="true">${icon}</span> Moderate`;
-        if (rate > 50) return `<span class="icon" aria-hidden="true">${icon}</span> Low`;
-        return `<span class="icon" aria-hidden="true">${icon}</span> Very low`;
     }
     
     showNotification(message) {
