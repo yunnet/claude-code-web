@@ -297,15 +297,29 @@ class SessionTabManager {
     //    to pick which sessions to open (instead of silently adopting strays or,
     //    worse, auto-creating a new session on a refresh race).
     async reconcileSessions() {
-        let server = [];
+        let server = null; // null = we never got an answer; [] = server really has none
         try {
-            const authHeaders = window.authManager ? window.authManager.getAuthHeaders() : {};
-            const res = await fetch('/api/sessions/list', { headers: authHeaders });
-            const data = await res.json();
-            server = data.sessions || [];
+            // authFetch (not a bare fetch) so a 401 raises the login prompt like
+            // everywhere else instead of looking like an empty session list.
+            const res = this.claudeInterface && this.claudeInterface.authFetch
+                ? await this.claudeInterface.authFetch('/api/sessions/list')
+                : await fetch('/api/sessions/list', { headers: window.authManager ? window.authManager.getAuthHeaders() : {} });
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data.sessions)) server = data.sessions;
+            }
         } catch (error) {
             console.error('reconcileSessions: failed to load sessions', error);
         }
+
+        // Couldn't reach the server (offline, 401, malformed body). Do NOT treat
+        // that as "no sessions exist" — that path persists an empty tab set and
+        // permanently destroys the user's tab selection + order. Leave the stored
+        // state untouched and let init fall through to the folder picker.
+        if (server === null) {
+            return { mode: 'unavailable', server: [], activeId: null };
+        }
+
         const byId = new Map(server.map(s => [s.id, s]));
         const serverIds = server.map(s => s.id);
         const addTabsFor = (ids) => ids.forEach(id => {

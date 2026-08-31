@@ -43,6 +43,10 @@ class ClaudeCodeWebServer {
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
     this.webSocketConnections = new Map(); // Maps WebSocket connection ID to session info
+    // Single-use, short-lived credentials for ONE file each (see createFileTicket).
+    // They are what lets the explorer render html/svg without putting the
+    // long-lived auth token in a URL the rendered page can read back.
+    this.fileTickets = new Map();
     this.claudeBridge = new ClaudeBridge();
     this.codexBridge = new CliBridge(codexConfig);
     this.agentBridge = new CliBridge(agentConfig);
@@ -614,6 +618,12 @@ class ClaudeCodeWebServer {
     // token exception.
     this.app.get('/api/fs/list', (req, res) => this.listDirectory(req, res));
 
+    // Mint a single-use ticket for one file so the explorer can open a RENDERED
+    // html/svg in a new tab without the auth token riding the URL. Normal header
+    // auth (a regular fetch), so the ticket itself is the only thing the opened
+    // page can read out of its own location — and it is dead on arrival.
+    this.app.post('/api/fs/ticket', (req, res) => this.createFileTicket(req, res));
+
     // Runtime-editable plan directories (additive to auto-discovery). Normal
     // header auth. GET returns the configured dirs plus active session roots (the
     // latter are already auto-covered, shown for context). POST replaces the list
@@ -1063,9 +1073,44 @@ class ClaudeCodeWebServer {
     });
   }
 
+  // Circuit breaker for the start->exit->restart loop: when an agent keeps dying
+  // right after start (e.g. a session id that can neither --resume nor be claimed
+  // fresh), stop retrying and surface something actionable. Shared by all three
+  // bridges — CLAUDE.md: behaviour added to one bridge belongs on the other two.
+  startCircuitOpen(session) {
+    const fails = session && session._startFails;
+    return !!(fails && fails.count >= 3 && (Date.now() - fails.last) < 20000);
+  }
+
+  // Send the breaker's explanation and report that the start was refused.
+  refuseStart(wsInfo, kind) {
+    const alias = (this.aliases && this.aliases[kind]) || kind;
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'error',
+      message: `${alias} keeps exiting immediately, so automatic retries have stopped. This session id may be in use or corrupted — please create a new session.`
+    });
+    return true;
+  }
+
+  // Feed the breaker from a bridge's onExit: a non-zero exit within a few seconds
+  // of the start counts as a rapid failure; anything else clears the streak.
+  recordStartExit(session, code) {
+    if (!session) return;
+    const c = (code && typeof code === 'object') ? code.exitCode : code;
+    const quick = session._startAt && (Date.now() - session._startAt) < 12000;
+    if (c !== 0 && quick) {
+      session._startFails = session._startFails || { count: 0, last: 0 };
+      session._startFails.count++;
+      session._startFails.last = Date.now();
+    } else {
+      session._startFails = { count: 0, last: 0 };
+    }
+  }
+
   async startClaude(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
-    if (!wsInfo || !wsInfo.claudeSessionId) {
+    if (!wsInfo) return; // connection already gone — nobody to answer
+    if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'No session joined'
@@ -1087,18 +1132,7 @@ class ClaudeCodeWebServer {
     // Capture the session ID to avoid closure issues
     const sessionId = wsInfo.claudeSessionId;
 
-    // Circuit breaker: if Claude keeps exiting right after starting (e.g. a stuck
-    // session id that can neither --resume nor be claimed with --session-id fresh),
-    // stop the start->exit->restart loop and surface a clear, actionable error.
-    const fails = session._startFails;
-    if (fails && fails.count >= 3 && (Date.now() - fails.last) < 20000) {
-      const alias = (this.aliases && this.aliases.claude) || 'Claude';
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'error',
-        message: `${alias} 反复瞬间退出，已停止自动重试（该会话 id 可能被占用或已损坏）。请新建一个会话。`
-      });
-      return;
-    }
+    if (this.startCircuitOpen(session)) return void this.refuseStart(wsInfo, 'claude');
     session._startAt = Date.now();
 
     // Per-session secret for the hook relay endpoint. Generated once and reused
@@ -1142,17 +1176,7 @@ class ClaudeCodeWebServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) {
             currentSession.active = false;
-            // Feed the circuit breaker: a non-zero exit within a few seconds of
-            // start counts as a rapid failure; anything else clears the streak.
-            const c = (code && typeof code === 'object') ? code.exitCode : code;
-            const quick = currentSession._startAt && (Date.now() - currentSession._startAt) < 12000;
-            if (c !== 0 && quick) {
-              currentSession._startFails = currentSession._startFails || { count: 0, last: 0 };
-              currentSession._startFails.count++;
-              currentSession._startFails.last = Date.now();
-            } else {
-              currentSession._startFails = { count: 0, last: 0 };
-            }
+            this.recordStartExit(currentSession, code);
           }
           this.broadcastToSession(sessionId, {
             type: 'exit',
@@ -1220,7 +1244,8 @@ class ClaudeCodeWebServer {
 
   async startCodex(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
-    if (!wsInfo || !wsInfo.claudeSessionId) {
+    if (!wsInfo) return; // connection already gone — nobody to answer
+    if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'No session joined'
@@ -1240,6 +1265,8 @@ class ClaudeCodeWebServer {
     }
 
     const sessionId = wsInfo.claudeSessionId;
+    if (this.startCircuitOpen(session)) return void this.refuseStart(wsInfo, 'codex');
+    session._startAt = Date.now();
     try {
       await this.codexBridge.startSession(sessionId, {
         workingDir: session.workingDir,
@@ -1258,6 +1285,7 @@ class ClaudeCodeWebServer {
           if (currentSession) {
             currentSession.active = false;
             currentSession.agent = null;
+            this.recordStartExit(currentSession, code);
           }
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
         },
@@ -1307,7 +1335,8 @@ class ClaudeCodeWebServer {
 
   async startAgent(wsId, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
-    if (!wsInfo || !wsInfo.claudeSessionId) {
+    if (!wsInfo) return; // connection already gone — nobody to answer
+    if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'No session joined'
@@ -1327,6 +1356,8 @@ class ClaudeCodeWebServer {
     }
 
     const sessionId = wsInfo.claudeSessionId;
+    if (this.startCircuitOpen(session)) return void this.refuseStart(wsInfo, 'agent');
+    session._startAt = Date.now();
     try {
       await this.agentBridge.startSession(sessionId, {
         workingDir: session.workingDir,
@@ -1345,6 +1376,7 @@ class ClaudeCodeWebServer {
           if (currentSession) {
             currentSession.active = false;
             currentSession.agent = null;
+            this.recordStartExit(currentSession, code);
           }
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
         },
@@ -1637,7 +1669,16 @@ class ClaudeCodeWebServer {
   // resolved (symlinks) and the target must be a regular file ≤ 10 MB.
   serveFile(req, res) {
     const params = req.params || {};
-    if (!this.noAuth && this.auth) {
+    // Two ways a browser navigation can authenticate here:
+    //  • a single-use ticket bound to one file — consumed on first use, and the
+    //    ONLY credential we let a *rendered* html/svg see in its own location;
+    //  • the long-lived auth token — still accepted (plan links, direct URLs),
+    //    but then html/svg fall back to text/plain source, because a rendered
+    //    page can read `location` and POST the token anywhere.
+    // Auth is decided before any fs call so an unauthenticated caller can't probe
+    // for file existence through the status code.
+    const ticket = this.takeFileTicket(params.token);
+    if (!ticket && !this.noAuth && this.auth) {
       const token = params.token;
       if (token !== `Bearer ${this.auth}` && token !== this.auth) {
         return res.status(401).json({ error: 'Unauthorized' });
@@ -1656,24 +1697,92 @@ class ClaudeCodeWebServer {
       const stat = fs.statSync(real);
       if (!stat.isFile()) return res.status(404).json({ error: 'Not found' });
       if (stat.size > 10 * 1024 * 1024) return res.status(413).json({ error: 'File too large' });
-      const ext = path.extname(real).toLowerCase();
-      if (ext === '.html' || ext === '.htm' || ext === '.svg') {
-        // Render the page/graphic instead of showing source, but sandbox it into
-        // an opaque origin: its scripts can run (so diagrams draw) yet cannot read
-        // this origin's auth token / localStorage / cookies. No allow-same-origin.
-        res.setHeader('Content-Security-Policy', 'sandbox allow-scripts allow-popups;');
-      }
-      return this.sendInlineFile(res, real, this.contentTypeForFile(real), fs.readFileSync(real));
+      // Render only via a ticket that matches this exact file (and is now spent).
+      // Deliberately not relaxed for --disable-auth: one rule for every mode beats
+      // "renders on my box, shows source in production".
+      const render = !!(ticket && ticket.real === real);
+      const csp = this.renderSandboxCsp(real, render);
+      if (csp) res.setHeader('Content-Security-Policy', csp);
+      return this.sendInlineFile(res, real, this.contentTypeForFile(real, render), fs.readFileSync(real));
     } catch (_) {
       return res.status(404).json({ error: 'Not found' });
     }
   }
 
-  // Pick a Content-Type from the file extension. HTML and SVG render as their
-  // real type (so the explorer shows the rendered page/diagram, not source), but
-  // serveFile sandboxes them via a CSP so their scripts run in an opaque origin
-  // and cannot read this origin's auth token / storage.
-  contentTypeForFile(filePath) {
+  // POST /api/fs/ticket {path} — mint a single-use, 30s credential for ONE file.
+  // Normal header auth. Kept deliberately worthless: bound to one realpath, spent
+  // on first read, so a rendered page that scrapes it out of its own URL gains
+  // nothing. This is what keeps the long-lived auth token out of rendered URLs.
+  createFileTicket(req, res) {
+    const requested = (req.body && req.body.path) || '';
+    const validation = this.validatePath(requested);
+    if (!validation.valid) return res.status(404).json({ error: 'Not found' });
+    let real;
+    try {
+      real = fs.realpathSync(validation.path);
+      if (!fs.statSync(real).isFile()) return res.status(404).json({ error: 'Not found' });
+    } catch (_) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    this.pruneFileTickets();
+    const ticket = `t_${uuidv4().replace(/-/g, '')}`;
+    this.fileTickets.set(ticket, { real, expires: Date.now() + 30000 });
+    return res.json({ ticket, expiresInMs: 30000 });
+  }
+
+  // Look up and CONSUME a ticket. Returns null for anything that isn't a live
+  // ticket, so callers fall through to the normal token check.
+  takeFileTicket(value) {
+    if (typeof value !== 'string' || !value.startsWith('t_')) return null;
+    const entry = this.fileTickets.get(value);
+    if (!entry) return null;
+    this.fileTickets.delete(value); // single use, hit or miss
+    if (entry.expires <= Date.now()) return null;
+    return entry;
+  }
+
+  // Drop expired tickets, and bound the map so a loop of mint requests can't grow
+  // it without limit (oldest first — Map keeps insertion order).
+  pruneFileTickets() {
+    const now = Date.now();
+    for (const [key, entry] of this.fileTickets) {
+      if (entry.expires <= now) this.fileTickets.delete(key);
+    }
+    while (this.fileTickets.size >= 200) {
+      this.fileTickets.delete(this.fileTickets.keys().next().value);
+    }
+  }
+
+  // CSP for a rendered html/svg: an opaque origin (no allow-same-origin) AND no
+  // network at all. The sandbox alone is not enough — it stops the page reading
+  // this origin's storage, but not the page reading its own URL and shipping it
+  // out via fetch/img/window.open/location. `default-src 'none'` closes the
+  // subresource routes; dropping allow-popups closes window.open; the ticket
+  // being single-use closes what's left (a top-level `location =` escape, which
+  // CSP cannot block since navigate-to is gone). Returns '' when not rendering.
+  renderSandboxCsp(filePath, render) {
+    if (!render) return '';
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.html' || ext === '.htm') {
+      // Scripts run so inlined diagram/chart code still draws; they just have
+      // nowhere to send anything. External CDN subresources will not load.
+      return "sandbox allow-scripts; default-src 'none'; img-src data: blob:; " +
+        "media-src data: blob:; font-src data:; style-src 'unsafe-inline'; " +
+        "script-src 'unsafe-inline' 'unsafe-eval'; form-action 'none'; base-uri 'none'";
+    }
+    if (ext === '.svg') {
+      // A graphic needs no script at all, so don't grant allow-scripts.
+      return "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; " +
+        "form-action 'none'; base-uri 'none'";
+    }
+    return '';
+  }
+
+  // Pick a Content-Type from the file extension. HTML and SVG are text/plain
+  // (source, the safe default) UNLESS `render` — see serveFile: rendering is
+  // granted only when the URL carries no reusable credential, and then
+  // renderSandboxCsp puts the page in an opaque origin with no network.
+  contentTypeForFile(filePath, render = false) {
     const ext = path.extname(filePath).toLowerCase();
     const images = {
       '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -1687,8 +1796,8 @@ class ClaudeCodeWebServer {
       '.toml', '.env', '.sql', '.csv', '.tsv', '.gitignore', '.dockerfile', '.makefile'
     ];
     if (ext === '.pdf') return 'application/pdf';
-    if (ext === '.html' || ext === '.htm') return 'text/html; charset=utf-8';
-    if (ext === '.svg') return 'image/svg+xml';
+    if (ext === '.html' || ext === '.htm') return render ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
+    if (ext === '.svg') return render ? 'image/svg+xml' : 'text/plain; charset=utf-8';
     if (images[ext]) return images[ext];
     if (textExts.includes(ext)) return 'text/plain; charset=utf-8';
     return 'application/octet-stream';

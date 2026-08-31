@@ -586,11 +586,7 @@ class SplitContainer {
     // relative order in the tab bar flipped, swap the panes to match.
     syncPaneOrderToTabs(tabOrder) {
         if (!this.enabled || !Array.isArray(tabOrder) || !this.splitContainerEl) return;
-        const paneEls = [...this.splitContainerEl.querySelectorAll('.split-pane')];
-        const paneSessions = paneEls.map(el => {
-            const sp = this.splits.find(s => s.container === el);
-            return sp ? sp.sessionId : null;
-        });
+        const paneSessions = this.orderedSplits().map(s => s.sessionId);
         if (paneSessions.length < 2 || !paneSessions[0] || !paneSessions[1]) return;
         const iFirst = tabOrder.indexOf(paneSessions[0]);
         const iSecond = tabOrder.indexOf(paneSessions[1]);
@@ -709,6 +705,23 @@ class SplitContainer {
         console.log('[SplitContainer] Closed split, back to single pane');
     }
 
+    // Panes in DOM order (left→right / top→bottom). swapPanes only moves the DOM
+    // nodes, so this is the only order that matches what the user sees.
+    orderedSplits() {
+        if (!this.splitContainerEl) return [...this.splits];
+        return [...this.splitContainerEl.querySelectorAll('.split-pane')]
+            .map(el => this.splits.find(s => s.container === el))
+            .filter(Boolean);
+    }
+
+    // Focus the pane at a visual position, whatever its splits[] index is.
+    focusPaneAt(position) {
+        const split = this.orderedSplits()[position];
+        if (!split) return;
+        const index = this.splits.indexOf(split);
+        if (index !== -1) this.focusSplit(index);
+    }
+
     focusSplit(index) {
         if (index < 0 || index >= this.splits.length) return;
         if (this.activeSplitIndex === index) return;
@@ -789,14 +802,16 @@ class SplitContainer {
                 }
             }
             
-            // Cmd/Ctrl + 1/2 to focus splits
+            // Cmd/Ctrl + 1/2 to focus the first/second pane. By POSITION, not by
+            // splits[] index: swapPanes reorders the DOM without touching the
+            // array, so after a swap splits[0] is the pane on the right.
             if ((e.metaKey || e.ctrlKey) && this.enabled) {
                 if (e.key === '1') {
                     e.preventDefault();
-                    this.focusSplit(0);
+                    this.focusPaneAt(0);
                 } else if (e.key === '2') {
                     e.preventDefault();
-                    this.focusSplit(1);
+                    this.focusPaneAt(1);
                 }
             }
         });
@@ -809,7 +824,8 @@ class SplitContainer {
                 orientation: this.orientation,
                 dividerPosition: this.dividerPosition,
                 activeSplitIndex: this.activeSplitIndex,
-                sessions: this.splits.map(s => s.sessionId)
+                // DOM order, so a swapPanes() is actually reflected in what we save.
+                sessions: this.orderedSplits().map(s => s.sessionId)
             };
             localStorage.setItem('cc-web-splits', JSON.stringify(state));
         } catch (error) {

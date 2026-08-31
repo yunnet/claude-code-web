@@ -237,10 +237,31 @@ class AuthManager {
     }
 
     // URL to open an arbitrary file (the file explorer) in a new tab, same path
-    // form as getPlanUrl so the URL ends in the file's real extension.
+    // form as getPlanUrl so the URL ends in the file's real extension. Carries the
+    // long-lived token, so the server serves html/svg as SOURCE on this form —
+    // use getFileTicket() when the file should actually be rendered.
     getFileUrl(filePath) {
         const token = this.token ? encodeURIComponent(this.token) : '-';
         return `/api/fs/file/${token}/${encodeURIComponent(filePath)}`;
+    }
+
+    // Mint a single-use, short-lived ticket for one file. Swapping the token for
+    // this in the URL is what makes rendering html/svg safe: the rendered page
+    // can read its own location, and all it finds there is a spent credential.
+    // Resolves null on any failure — the caller falls back to the source view.
+    async getFileTicket(filePath) {
+        try {
+            const res = await fetch('/api/fs/ticket', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this.getAuthHeaders() },
+                body: JSON.stringify({ path: filePath })
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.ticket || null;
+        } catch (_) {
+            return null;
+        }
     }
 
     logout() {

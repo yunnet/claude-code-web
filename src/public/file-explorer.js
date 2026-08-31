@@ -76,24 +76,30 @@
       handle.title = 'Drag to resize';
       content.appendChild(handle);
 
+      // Pointer events, not mouse events: this is a mobile-first PWA, and pointer
+      // covers touch and pen as well without a second set of handlers.
       let dragging = false;
-      handle.addEventListener('mousedown', (e) => {
+      handle.addEventListener('pointerdown', (e) => {
         dragging = true;
+        try { handle.setPointerCapture(e.pointerId); } catch (_) {}
         document.body.style.cursor = 'col-resize';
         document.body.style.userSelect = 'none';
         e.preventDefault();
       });
-      document.addEventListener('mousemove', (e) => {
+      document.addEventListener('pointermove', (e) => {
         if (!dragging) return;
+        e.preventDefault(); // stop touch-drag from scrolling the page instead
         content.style.width = this.clampWidth(window.innerWidth - e.clientX) + 'px';
       });
-      document.addEventListener('mouseup', () => {
+      const endDrag = () => {
         if (!dragging) return;
         dragging = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         try { localStorage.setItem('cc-web-explorer-width', String(parseInt(content.style.width, 10) || 440)); } catch (_) {}
-      });
+      };
+      document.addEventListener('pointerup', endDrag);
+      document.addEventListener('pointercancel', endDrag);
     }
 
     open(startPath) {
@@ -213,11 +219,39 @@
       return dir.endsWith('/') ? dir + name : dir + '/' + name;
     }
 
+    // Types the server will RENDER rather than show as source. They only get
+    // rendered when the URL carries a single-use ticket instead of the auth
+    // token, because a rendered page can read its own location.
+    static get RENDERED_EXTS() { return ['.html', '.htm', '.svg']; }
+
+    isRendered(filePath) {
+      const name = String(filePath || '').toLowerCase();
+      return FileExplorer.RENDERED_EXTS.some((ext) => name.endsWith(ext));
+    }
+
     openFile(filePath) {
-      const url = (window.authManager && window.authManager.getFileUrl)
+      const plainUrl = (window.authManager && window.authManager.getFileUrl)
         ? window.authManager.getFileUrl(filePath)
         : '/api/fs/file/-/' + encodeURIComponent(filePath);
-      window.open(url, '_blank', 'noopener');
+      if (!this.isRendered(filePath) || !(window.authManager && window.authManager.getFileTicket)) {
+        window.open(plainUrl, '_blank', 'noopener');
+        return;
+      }
+      // Open the tab synchronously (a popup blocker would eat a window.open that
+      // happens after an await), then point it at the ticketed URL. Can't pass
+      // 'noopener' here — that makes window.open return null and we need the
+      // handle — so sever the link by hand while the tab is still about:blank.
+      // If minting fails we still land on the token URL, which serves the file as
+      // source: degraded, never unsafe.
+      const tab = window.open('', '_blank');
+      if (tab) { try { tab.opener = null; } catch (_) {} }
+      window.authManager.getFileTicket(filePath).then((ticket) => {
+        const url = ticket
+          ? `/api/fs/file/${encodeURIComponent(ticket)}/${encodeURIComponent(filePath)}`
+          : plainUrl;
+        if (tab) tab.location = url;
+        else window.open(url, '_blank', 'noopener');
+      });
     }
   }
 

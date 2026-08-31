@@ -211,16 +211,23 @@ class ClaudeBridge {
           const looksInUse = inUseNoted || dataBuffer.toLowerCase().includes('already in use');
           if (mode === 'fresh' && !phantomRecovered && code !== 0 && (Date.now() - launchedAt) < 8000 && looksInUse) {
             phantomRecovered = true;
-            if (this.clearEmptyTranscript(sessionId, workingDir)) {
-              launchedAt = Date.now();
-              inUseNoted = false;
-              dataBuffer = '';
-              const old = session.process;
-              console.log(`Cleared empty phantom transcript for ${sessionId}; retrying fresh`);
-              session.process = spawnClaude('fresh');
-              wire(session.process);
-              if (old && old !== session.process) { try { old.kill(); } catch (_) {} }
-              return; // swallow this exit; the retried process takes over
+            if (this.clearEmptyTranscript(sessionId)) {
+              // We are inside a PTY event handler — the enclosing try/catch has
+              // long since returned, so a spawn failure here would surface as an
+              // uncaughtException and take the server down. Fall through to the
+              // normal exit path instead. (No kill of the old process: it is the
+              // one that just exited.)
+              try {
+                launchedAt = Date.now();
+                inUseNoted = false;
+                dataBuffer = '';
+                console.log(`Cleared empty phantom transcript for ${sessionId}; retrying fresh`);
+                session.process = spawnClaude('fresh');
+                wire(session.process);
+                return; // swallow this exit; the retried process takes over
+              } catch (err) {
+                console.error(`Phantom retry failed to spawn for ${sessionId}:`, err);
+              }
             }
           }
 
@@ -257,9 +264,15 @@ class ClaudeBridge {
         dataBuffer = '';
         const old = session.process;
         console.log(`Resume fallback for ${sessionId} (${reason}); starting a fresh session`);
-        session.process = spawnClaude('fresh'); // becomes the new current process
-        wire(session.process);
-        if (old && old !== session.process) { try { old.kill(); } catch (_) {} }
+        // Guarded for the same reason as the phantom retry below: this runs from
+        // a PTY data handler, outside the enclosing try/catch.
+        try {
+          session.process = spawnClaude('fresh'); // becomes the new current process
+          wire(session.process);
+          if (old && old !== session.process) { try { old.kill(); } catch (_) {} }
+        } catch (err) {
+          console.error(`Resume fallback failed to spawn for ${sessionId}:`, err);
+        }
       };
 
       session.process = spawnClaude(mode);
@@ -286,7 +299,14 @@ class ClaudeBridge {
   // metadata line, no user/assistant turns) so a stuck "already in use" id can be
   // reclaimed with --session-id. Safe: it only removes a tiny file with no real
   // conversation. Globs across project dirs so we don't depend on the dir-encoding.
-  clearEmptyTranscript(sessionId, workingDir) {
+  // Also drops the id's session-env dir, which is dead once the transcript is.
+  clearEmptyTranscript(sessionId) {
+    // The id is interpolated into paths we then delete — one of them recursively,
+    // inside the user's home. Ids are server-minted uuids, but they also round-trip
+    // through sessions.json, so re-check the shape rather than trust the caller.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sessionId || ''))) {
+      return false;
+    }
     try {
       const os = require('os');
       const root = path.join(os.homedir(), '.claude', 'projects');

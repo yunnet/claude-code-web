@@ -98,4 +98,21 @@ describe('ClaudeBridge', function() {
       assert(cmd.includes(`'a'\\''b; rm -rf /'`), 'session id is single-quote escaped');
     });
   });
+
+  describe('clearEmptyTranscript', function() {
+    // The id is interpolated into paths this deletes — one of them recursively,
+    // inside the user's home. Anything that isn't a uuid must be refused before
+    // a single fs call happens.
+    it('refuses ids that are not uuids', function() {
+      const bad = ['../../..', '.', '..', '', null, undefined, 'a/b', 'not-a-uuid',
+                   '../../../.claude', '3f389a10-7fe6-42ed-81fc-ada46a5f4232/../..'];
+      for (const id of bad) {
+        assert.strictEqual(bridge.clearEmptyTranscript(id), false, `must refuse ${JSON.stringify(id)}`);
+      }
+    });
+
+    it('accepts a well-formed uuid (and reports false when nothing matches)', function() {
+      assert.strictEqual(bridge.clearEmptyTranscript('3f389a10-7fe6-42ed-81fc-ada46a5f4232'), false);
+    });
+  });
 });

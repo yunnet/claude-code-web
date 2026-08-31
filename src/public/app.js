@@ -99,8 +99,14 @@ class ClaudeCodeWebInterface {
         //  - conflict: the persisted tab set doesn't match the server → let the
         //    user pick which sessions to open (no silent adopt / no auto-create).
         //  - adopted/restored: tabs are already built; join the chosen active one.
+        //  - unavailable: the session list couldn't be fetched. The stored tab set
+        //    is left alone (see reconcileSessions) so a blip doesn't erase it.
         //  - nothing at all: first run → folder picker to create the first session.
-        if (reconcile && reconcile.mode === 'conflict') {
+        if (reconcile && reconcile.mode === 'unavailable') {
+            this.hideOverlay();
+            this.showError('Could not load the session list — check the connection and reload.');
+            this.showFolderBrowser();
+        } else if (reconcile && reconcile.mode === 'conflict') {
             this.hideOverlay();
             this.showSessionReconcileModal(reconcile);
         } else if (this.sessionTabManager.tabs.size > 0) {
@@ -1341,85 +1347,82 @@ class ClaudeCodeWebInterface {
         const activeTab = stm && stm.activeTabId;
         if (activeTab && stm.tabs.has(activeTab)) {
             this.currentClaudeSessionId = activeTab;
-            this.send({ type: 'join_session', sessionId: activeTab });
+            // The server handles ws messages with an async handler it does not
+            // serialize, and joinClaudeSession awaits a leave before it sets
+            // wsInfo.claudeSessionId — so a start_* sent in this same tick can
+            // overtake the join and come back "No session joined". Park the wait
+            // here; the start callers await it before sending.
+            this.pendingStartJoin = new Promise((resolve) => {
+                this.pendingJoinResolve = resolve;
+                this.pendingJoinSessionId = activeTab;
+                this.send({ type: 'join_session', sessionId: activeTab });
+                setTimeout(() => {
+                    if (this.pendingJoinSessionId === activeTab) {
+                        this.pendingJoinResolve = null;
+                        this.pendingJoinSessionId = null;
+                    }
+                    resolve(); // don't hang the start if the ack never lands
+                }, 2000);
+            });
             return activeTab;
         }
         return null;
+    }
+
+    // Await a join issued by resolveStartSession, if there is one outstanding.
+    async awaitPendingStartJoin() {
+        if (!this.pendingStartJoin) return;
+        const pending = this.pendingStartJoin;
+        this.pendingStartJoin = null;
+        await pending;
+    }
+
+    // Shared start path for all three bridges: resolve/create the session, then
+    // send the bridge's start message. Extracted so the join/start ordering fix
+    // lives in one place instead of three copies that can drift apart.
+    async startAssistantSession(startType, options, loadingText) {
+        this.showOverlay('loadingSpinner');
+        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+
+        if (!this.resolveStartSession()) {
+            const sessionName = `Session ${new Date().toLocaleString()}`;
+            this.send({
+                type: 'create_session',
+                name: sessionName,
+                workingDir: this.selectedWorkingDir
+            });
+            // Wait for session creation, then start
+            setTimeout(() => {
+                this.send({ type: startType, options, ...this.termDims() });
+            }, 500);
+            return;
+        }
+        // Don't race the join we may have just issued (see resolveStartSession).
+        await this.awaitPendingStartJoin();
+        this.send({ type: startType, options, ...this.termDims() });
     }
 
     startClaudeSession(options = {}) {
         // Require a project directory before starting — otherwise it would run in
         // the launch/home directory. Prompt for a folder first if none is chosen.
         if (this.ensureProjectFolder('claude', options)) return;
-        // If no session, create one first
-        if (!this.resolveStartSession()) {
-            const sessionName = `Session ${new Date().toLocaleString()}`;
-            this.send({ 
-                type: 'create_session',
-                name: sessionName,
-                workingDir: this.selectedWorkingDir
-            });
-            // Wait for session creation, then start Claude
-            setTimeout(() => {
-                this.send({ type: 'start_claude', options, ...this.termDims() });
-            }, 500);
-        } else {
-            this.send({ type: 'start_claude', options, ...this.termDims() });
-        }
-        
-        this.showOverlay('loadingSpinner');
-        const loadingText = options.dangerouslySkipPermissions ? 
-            `Starting ${this.getAlias('claude')} (skipping permissions)...` : 
+        const loadingText = options.dangerouslySkipPermissions ?
+            `Starting ${this.getAlias('claude')} (skipping permissions)...` :
             `Starting ${this.getAlias('claude')}...`;
-        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+        return this.startAssistantSession('start_claude', options, loadingText);
     }
 
     startCodexSession(options = {}) {
         if (this.ensureProjectFolder('codex', options)) return;
-        // If no session, create one first
-        if (!this.resolveStartSession()) {
-            const sessionName = `Session ${new Date().toLocaleString()}`;
-            this.send({
-                type: 'create_session',
-                name: sessionName,
-                workingDir: this.selectedWorkingDir
-            });
-            // Wait for session creation, then start Codex
-            setTimeout(() => {
-                this.send({ type: 'start_codex', options, ...this.termDims() });
-            }, 500);
-        } else {
-            this.send({ type: 'start_codex', options, ...this.termDims() });
-        }
-
-        this.showOverlay('loadingSpinner');
         const loadingText = options.dangerouslySkipPermissions ?
             `Starting ${this.getAlias('codex')} (bypassing approvals and sandbox)...` :
             `Starting ${this.getAlias('codex')}...`;
-        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+        return this.startAssistantSession('start_codex', options, loadingText);
     }
 
     startAgentSession(options = {}) {
         if (this.ensureProjectFolder('agent', options)) return;
-        // If no session, create one first
-        if (!this.resolveStartSession()) {
-            const sessionName = `Session ${new Date().toLocaleString()}`;
-            this.send({
-                type: 'create_session',
-                name: sessionName,
-                workingDir: this.selectedWorkingDir
-            });
-            // Wait for session creation, then start Agent
-            setTimeout(() => {
-                this.send({ type: 'start_agent', options, ...this.termDims() });
-            }, 500);
-        } else {
-            this.send({ type: 'start_agent', options, ...this.termDims() });
-        }
-        
-        this.showOverlay('loadingSpinner');
-        const loadingText = `Starting ${this.getAlias('agent')}...`;
-        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+        return this.startAssistantSession('start_agent', options, `Starting ${this.getAlias('agent')}...`);
     }
 
     clearTerminal() {
@@ -2432,7 +2435,7 @@ class ClaudeCodeWebInterface {
             e.preventDefault(); e.stopPropagation();
             const row = btn.closest('.reconcile-row');
             const id = row && row.dataset.id;
-            if (id && confirm('删除该会话？此操作不可恢复。')) { this.deleteSession(id); row.remove(); }
+            if (id && confirm('删除该会话？此操作不可恢复。')) { this.deleteSession(id, { skipConfirm: true }); row.remove(); }
         }));
         modal.querySelector('#rcNew').addEventListener('click', () => { modal.remove(); this.showFolderBrowser(); });
         modal.querySelector('#rcConfirm').addEventListener('click', async () => {
@@ -2548,11 +2551,13 @@ class ClaudeCodeWebInterface {
         // Session dropdown removed - using tabs
     }
     
-    async deleteSession(sessionId) {
-        if (!confirm('Are you sure you want to delete this session? This will stop any running Claude process.')) {
+    // skipConfirm: for callers that already asked (the reconcile picker), so the
+    // user isn't made to confirm the same deletion twice.
+    async deleteSession(sessionId, { skipConfirm = false } = {}) {
+        if (!skipConfirm && !confirm('Are you sure you want to delete this session? This will stop any running Claude process.')) {
             return;
         }
-        
+
         try {
             const response = await this.authFetch(`/api/sessions/${sessionId}`, {
                 method: 'DELETE'
