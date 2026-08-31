@@ -8,6 +8,16 @@
   const FOLDER_ICON = '<svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>';
   const FILE_ICON = '<svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3v5h5"/><path d="M6 2h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z"/></svg>';
 
+  // Parse each icon ONCE; rows clone the node. Assigning innerHTML per row runs
+  // the HTML parser once per row, which is most of the cost of a big listing.
+  const iconNode = (svg) => {
+    const t = document.createElement('template');
+    t.innerHTML = svg;
+    return t.content.firstElementChild;
+  };
+  const FOLDER_ICON_NODE = iconNode(FOLDER_ICON);
+  const FILE_ICON_NODE = iconNode(FILE_ICON);
+
   function formatSize(bytes) {
     if (!bytes) return '';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -44,6 +54,16 @@
           if (v) this.load(v);
         }
       });
+      // One delegated listener for the whole list: a 2000-row listing used to
+      // attach 2000 closures. Rows carry their target in data-path/data-type
+      // (dataset, never innerHTML, so a crafted filename can't inject markup).
+      this.el('explorerList').addEventListener('click', (e) => {
+        const row = e.target.closest && e.target.closest('.folder-item');
+        if (!row || !row.dataset.path) return;
+        if (row.dataset.type === 'dir') this.load(row.dataset.path);
+        else this.openFile(row.dataset.path);
+      });
+
       // Esc closes while the explorer is open.
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modal.classList.contains('active')) this.close();
@@ -154,28 +174,33 @@
     render(items, truncated) {
       const list = this.el('explorerList');
       list.innerHTML = '';
+      // Assemble off-document and insert once, so the browser lays out and paints
+      // the listing a single time instead of once per row.
+      const frag = document.createDocumentFragment();
 
       if (this.parent) {
         const up = document.createElement('div');
         up.className = 'folder-item folder-item-parent';
-        up.innerHTML = FOLDER_ICON;
+        up.appendChild(FOLDER_ICON_NODE.cloneNode(true));
         const name = document.createElement('span');
         name.className = 'folder-name';
         name.textContent = '..';
         up.appendChild(name);
-        up.addEventListener('click', () => this.load(this.parent));
-        list.appendChild(up);
+        up.dataset.type = 'dir';
+        up.dataset.path = this.parent;
+        frag.appendChild(up);
       }
 
       if (!items.length) {
-        list.appendChild(this.emptyRow('This folder is empty'));
+        frag.appendChild(this.emptyRow('This folder is empty'));
+        list.appendChild(frag);
         return;
       }
 
       for (const item of items) {
         const row = document.createElement('div');
         row.className = 'folder-item';
-        row.innerHTML = item.type === 'dir' ? FOLDER_ICON : FILE_ICON;
+        row.appendChild((item.type === 'dir' ? FOLDER_ICON_NODE : FILE_ICON_NODE).cloneNode(true));
 
         const name = document.createElement('span');
         name.className = 'folder-name';
@@ -195,23 +220,20 @@
           size.className = 'folder-size';
           size.textContent = formatSize(item.size);
           row.appendChild(size);
+          row.title = 'Open in a new tab';
         }
 
-        const full = this.join(this.currentPath, item.name);
-        if (item.type === 'dir') {
-          row.addEventListener('click', () => this.load(full));
-        } else {
-          row.title = 'Open in a new tab';
-          row.addEventListener('click', () => this.openFile(full));
-        }
-        list.appendChild(row);
+        row.dataset.type = item.type;
+        row.dataset.path = this.join(this.currentPath, item.name);
+        frag.appendChild(row);
       }
 
       if (truncated) {
         const note = this.emptyRow('Showing the first 2000 items — narrow down with the path bar.');
         note.classList.add('folder-truncated');
-        list.appendChild(note);
+        frag.appendChild(note);
       }
+      list.appendChild(frag);
     }
 
     join(dir, name) {

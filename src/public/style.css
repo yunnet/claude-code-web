@@ -1490,8 +1490,11 @@ body {
     top: 0;
     width: 100%;
     height: 100%;
+    /* A 60%-black scrim already hides what's behind it, so a backdrop blur on
+       top of it buys almost nothing visually — and it costs a full-viewport
+       re-blur on every composited frame, which halved the frame rate while the
+       explorer drawer was open. Scrim only. */
     background-color: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(4px);
 }
 
 .folder-browser-modal.active {
