@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-31
+
+### Removed (breaking)
+- **Codex and cursor-agent support is gone.** 3.20.4 removed their buttons but left
+  the whole subsystem wired up and reachable over the WebSocket. `cli-bridge.js`,
+  the `start_codex` / `start_agent` messages and their started/stopped events, and
+  the `--codex-alias` / `--agent-alias` flags are all removed. This is a
+  Claude-only tool now. **Passing `--codex-alias` or `--agent-alias` is now an
+  error, not a no-op.**
+- **Token-usage analytics removed.** `usage-reader.js` and `usage-analytics.js`
+  (~1400 lines) were dead: their only consumer was a display function that
+  returned immediately behind ~190 lines of unreachable code. With them go the
+  `get_usage` / `usage_update` messages, the per-session usage counters, the
+  "Show Token Stats" setting, `docs/ADVANCED_ANALYTICS.md`, and the `--plan` flag
+  plus the `CLAUDE_PLAN` / `CLAUDE_COST_LIMIT` / `CLAUDE_SESSION_HOURS` env vars.
+  **Passing `--plan` is now an error.** Side benefit: the browser no longer polls
+  `get_usage` every 30s, so the server stops re-scanning `~/.claude` transcripts.
+
+### Security
+- **The auth token no longer rides a URL that a rendered page can read.** 3.20.5
+  started rendering `.html`/`.svg` from the file explorer, but the explorer's URL
+  carries the full auth token in its path — so a malicious file could read its own
+  `location` and post the token anywhere, and that token grants a PTY on the host.
+  Rendering now requires a single-use ticket (`POST /api/fs/ticket`): bound to one
+  realpath, 30s TTL, spent on first read. A token URL serves `.html`/`.svg` as
+  source, as it did before 3.20.5. Rendered files are additionally sandboxed into
+  an opaque origin with `default-src 'none'` and no `allow-popups`; SVG gets no
+  `allow-scripts` at all.
+
 ### Added
 - **Refresh reconciles sessions instead of auto-adopting/creating.** The client now
   persists its tab set (ordered session-ids + active, + dismissed ids) in
@@ -11,6 +40,31 @@
   appeared) opens a picker to choose which sessions to open / delete / start new.
   Dismissed sessions are remembered so they don't re-prompt. Fixes refresh-time
   "new session created / tab shows the wrong content".
+
+### Fixed
+- **A failed session-list fetch no longer erases your tabs.** Reconcile treated a
+  network error, a 401, or a malformed body as "the server has no sessions" and
+  persisted an empty tab set, destroying the tab selection and order for good. It
+  now reports the list as unavailable and leaves stored state untouched; a 401
+  raises the login prompt like every other request.
+- **Start no longer races the session join.** The client sent `join_session` and
+  `start_claude` in the same tick, but the server does not serialize its async
+  message handler, so the start could overtake the join and come back "No session
+  joined". Starts now wait for the join acknowledgement.
+- **The start circuit breaker no longer crashes the server on respawn.** The
+  phantom-session retry and the resume fallback both call `spawn` from inside a
+  PTY event handler, outside the enclosing try — a spawn failure surfaced as an
+  uncaughtException. Both are guarded now.
+- Session ids are validated as UUIDs before the bridge deletes a transcript or
+  recursively removes a `session-env` directory under the user's home.
+- Deleting a session from the reconcile picker asked for confirmation twice.
+- `Cmd/Ctrl+1` / `Cmd/Ctrl+2` focus the first/second pane by position; after
+  swapping panes they used to be backwards. Split state also saves in visual order.
+- The file-explorer drawer resizes with pointer events, so it works on touch.
+
+### Changed
+- All UI strings are English; the reconcile picker, image-paste toasts and folder
+  browser were partly Chinese.
 
 ## [3.20.7] - 2026-08-29
 
