@@ -9,8 +9,6 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const ClaudeBridge = require('./claude-bridge');
 const SessionStore = require('./utils/session-store');
-const UsageReader = require('./usage-reader');
-const UsageAnalytics = require('./usage-analytics');
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -36,9 +34,6 @@ class ClaudeCodeWebServer {
     const seededPlanDirs = (options.planDirs || []).map((p) => path.resolve(p));
     const persistedPlanDirs = this.loadPlanDirs();
     this.planDirs = persistedPlanDirs !== null ? persistedPlanDirs : seededPlanDirs;
-    // Session duration in hours (default to 5 hours from first message)
-    this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
-    
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions, keyed by session id
     this.webSocketConnections = new Map(); // Maps WebSocket connection ID to session info
@@ -48,24 +43,9 @@ class ClaudeCodeWebServer {
     this.fileTickets = new Map();
     this.claudeBridge = new ClaudeBridge();
     this.sessionStore = new SessionStore();
-    this.usageReader = new UsageReader(this.sessionDurationHours);
-    this.usageAnalytics = new UsageAnalytics({
-      sessionDurationHours: this.sessionDurationHours,
-      plan: options.plan || process.env.CLAUDE_PLAN || 'max20',
-      customCostLimit: parseFloat(process.env.CLAUDE_COST_LIMIT || options.customCostLimit || 50.00)
-    });
     this.autoSaveInterval = null;
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
-    // Shared usage snapshot cache. Every connected browser polls get_usage on a
-    // timer, and each poll runs four transcript-scanning calculators. Without
-    // this, N clients × frequent polls fan out into overlapping full scans that
-    // peg CPU and leak file descriptors. Cache the heavy result briefly and
-    // collapse concurrent requests onto a single in-flight computation.
-    this._usageSnapshot = null;
-    this._usageSnapshotTime = 0;
-    this._usageSnapshotInflight = null;
-    this._usageSnapshotTTL = 15000; // ms
     // Commands dropdown removed
     // Assistant aliases (for UI display only)
     this.aliases = {
@@ -913,8 +893,6 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, { type: 'pong' });
         break;
 
-      case 'get_usage':
-        this.handleGetUsage(wsInfo);
         break;
 
       default:
@@ -958,15 +936,6 @@ class ClaudeCodeWebServer {
       pausedConnections: new Set(),
       flowResumeTimer: null,
       outputBuffer: [],
-      sessionStartTime: null, // Will be set when Claude starts
-      sessionUsage: {
-        requests: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheTokens: 0,
-        totalCost: 0,
-        models: {}
-      },
       maxBufferSize: 1000
     };
     
@@ -1173,11 +1142,6 @@ class ClaudeCodeWebServer {
         session.claudeStarted = true;
         this.saveSessionsToDisk();
       }
-      // Set session start time if this is the first time Claude is started in this session
-      if (!session.sessionStartTime) {
-        session.sessionStartTime = new Date();
-      }
-
       this.broadcastToSession(sessionId, {
         type: 'claude_started',
         sessionId: sessionId
@@ -1734,131 +1698,6 @@ class ClaudeCodeWebServer {
     // Clear all data
     this.claudeSessions.clear();
     this.webSocketConnections.clear();
-  }
-
-  // Compute the heavy, transcript-scanning usage numbers at most once per TTL,
-  // and share a single in-flight computation across concurrent callers so that
-  // many clients polling get_usage don't trigger overlapping full scans.
-  async getUsageSnapshot() {
-    const now = Date.now();
-    if (this._usageSnapshot && (now - this._usageSnapshotTime) < this._usageSnapshotTTL) {
-      return this._usageSnapshot;
-    }
-    if (this._usageSnapshotInflight) {
-      return this._usageSnapshotInflight;
-    }
-    this._usageSnapshotInflight = (async () => {
-      // Sequential (not Promise.all) to keep the peak open-file count low.
-      const currentSessionStats = await this.usageReader.getCurrentSessionStats();
-      const burnRateData = await this.usageReader.calculateBurnRate(60);
-      const overlappingSessions = await this.usageReader.detectOverlappingSessions();
-      const dailyStats = await this.usageReader.getUsageStats(24);
-      const snapshot = { currentSessionStats, burnRateData, overlappingSessions, dailyStats };
-      this._usageSnapshot = snapshot;
-      this._usageSnapshotTime = Date.now();
-      return snapshot;
-    })();
-    try {
-      return await this._usageSnapshotInflight;
-    } finally {
-      this._usageSnapshotInflight = null;
-    }
-  }
-
-  async handleGetUsage(wsInfo) {
-    try {
-      const { currentSessionStats, burnRateData, overlappingSessions, dailyStats } =
-        await this.getUsageSnapshot();
-
-      // Update analytics with current session data
-      if (currentSessionStats && currentSessionStats.sessionStartTime) {
-        // Start tracking this session in analytics
-        this.usageAnalytics.startSession(
-          currentSessionStats.sessionId,
-          new Date(currentSessionStats.sessionStartTime)
-        );
-        
-        // Add usage data to analytics
-        if (currentSessionStats.totalTokens > 0) {
-          this.usageAnalytics.addUsageData({
-            tokens: currentSessionStats.totalTokens,
-            inputTokens: currentSessionStats.inputTokens,
-            outputTokens: currentSessionStats.outputTokens,
-            cacheCreationTokens: currentSessionStats.cacheCreationTokens,
-            cacheReadTokens: currentSessionStats.cacheReadTokens,
-            cost: currentSessionStats.totalCost,
-            model: Object.keys(currentSessionStats.models)[0] || 'unknown',
-            sessionId: currentSessionStats.sessionId
-          });
-        }
-      }
-      
-      // Get comprehensive analytics
-      const analytics = this.usageAnalytics.getAnalytics();
-      
-      // Calculate session timer if we have a current session
-      let sessionTimer = null;
-      if (currentSessionStats && currentSessionStats.sessionStartTime) {
-        // Session starts at the hour, not the exact minute
-        const startTime = new Date(currentSessionStats.sessionStartTime);
-        const now = new Date();
-        const elapsedMs = now - startTime;
-        
-        // Calculate remaining time in session window (5 hours from first message)
-        const sessionDurationMs = this.sessionDurationHours * 60 * 60 * 1000;
-        const remainingMs = Math.max(0, sessionDurationMs - elapsedMs);
-        
-        const hours = Math.floor(elapsedMs / (1000 * 60 * 60));
-        const minutes = Math.floor((elapsedMs % (1000 * 60 * 60)) / (1000 * 60));
-        const seconds = Math.floor((elapsedMs % (1000 * 60)) / 1000);
-        
-        const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
-        const remainingMinutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
-        
-        sessionTimer = {
-          startTime: currentSessionStats.sessionStartTime,
-          elapsed: elapsedMs,
-          remaining: remainingMs,
-          formatted: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
-          remainingFormatted: `${String(remainingHours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`,
-          hours,
-          minutes,
-          seconds,
-          remainingMs,
-          sessionDurationHours: this.sessionDurationHours,
-          sessionNumber: currentSessionStats.sessionNumber || 1, // Add session number
-          isExpired: remainingMs === 0,
-          burnRate: burnRateData.rate,
-          burnRateConfidence: burnRateData.confidence,
-          depletionTime: analytics.predictions.depletionTime,
-          depletionConfidence: analytics.predictions.confidence
-        };
-      }
-      
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'usage_update',
-        sessionStats: currentSessionStats || {
-          requests: 0,
-          totalTokens: 0,
-          totalCost: 0,
-          message: 'No active Claude session'
-        },
-        dailyStats: dailyStats,
-        sessionTimer: sessionTimer,
-        analytics: analytics,
-        burnRate: burnRateData,
-        overlappingSessions: overlappingSessions.length,
-        plan: this.usageAnalytics.currentPlan,
-        limits: this.usageAnalytics.planLimits[this.usageAnalytics.currentPlan]
-      });
-      
-    } catch (error) {
-      console.error('Error getting usage stats:', error);
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'error',
-        message: 'Failed to retrieve usage statistics'
-      });
-    }
   }
 
 }

@@ -62,13 +62,8 @@ npm run dev            # starts with debug logging
 
 ### Basic Usage
 ```bash
-# Start with default settings (port 32352, max20 plan, auto-generated auth token)
+# Start with default settings (port 32352, auto-generated auth token)
 npx claude-code-web
-
-# Specify a subscription plan
-npx claude-code-web --plan pro    # 19k tokens, $18 limit
-npx claude-code-web --plan max5   # 88k tokens, $35 limit  
-npx claude-code-web --plan max20  # 220k tokens, $140 limit (default)
 
 # Specify a custom port
 npx claude-code-web --port 8080
@@ -174,7 +169,6 @@ node bin/cc-web.js --auth YOUR_TOKEN
 | `--cert <path>` | SSL certificate file path | none |
 | `--key <path>` | SSL private key file path | none |
 | `--dev` | Development mode with extra logging | false |
-| `--plan <type>` | Subscription plan (pro, max5, max20) | max20 |
 
 ## How It Works
 

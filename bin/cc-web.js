@@ -20,7 +20,6 @@ program
   .option('--cert <path>', 'path to SSL certificate file')
   .option('--key <path>', 'path to SSL private key file')
   .option('--dev', 'development mode with additional logging')
-  .option('--plan <type>', 'subscription plan (pro, max5, max20)', 'max20')
   .option('--claude-alias <name>', 'display alias for Claude (default: env CLAUDE_ALIAS or "Claude")')
   .option('--ngrok-auth-token <token>', 'ngrok auth token to open a public tunnel')
   .option('--ngrok-domain <domain>', 'ngrok reserved domain to use for the tunnel')
@@ -69,7 +68,6 @@ async function main() {
       cert: options.cert,
       key: options.key,
       dev: options.dev,
-      plan: options.plan,
       // UI alias for the assistant
       claudeAlias: options.claudeAlias || process.env.CLAUDE_ALIAS || 'Claude',
       // Explicit plan directories for /api/plan (comma-separated). Overrides the
@@ -85,7 +83,6 @@ async function main() {
     console.log('Starting Claude Code Web Interface...');
     console.log(`Port: ${port}`);
     console.log('Mode: Folder selection mode');
-    console.log(`Plan: ${options.plan}`);
     console.log(`Alias: Claude → "${serverOptions.claudeAlias}"`);
     if (serverOptions.planDirs.length) {
       console.log(`Plan dirs (seed, additive to auto-discovery): ${serverOptions.planDirs.join(', ')}`);
