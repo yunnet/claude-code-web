@@ -1328,13 +1328,13 @@ class ClaudeCodeWebInterface {
             });
             // Wait for session creation, then start
             setTimeout(() => {
-                this.send({ type: 'start_claude', options, ...this.termDims() });
+                this.send({ type: 'start_claude', options, uiTheme: this.currentUiTheme(), ...this.termDims() });
             }, 500);
             return;
         }
         // Don't race the join we may have just issued (see resolveStartSession).
         await this.awaitPendingStartJoin();
-        this.send({ type: 'start_claude', options, ...this.termDims() });
+        this.send({ type: 'start_claude', options, uiTheme: this.currentUiTheme(), ...this.termDims() });
     }
 
     clearTerminal() {
@@ -1792,6 +1792,12 @@ class ClaudeCodeWebInterface {
             });
         }
         this.fitTerminal();
+    }
+
+    // Which palette the terminal is actually painted with. Sent with start_claude
+    // so Claude's own theme matches the background we draw behind it.
+    currentUiTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     }
 
     // Live theme switch (no page reload): flip the `data-theme` attribute (CSS

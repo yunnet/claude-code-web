@@ -50,6 +50,7 @@ class ClaudeBridge {
 
     const {
       workingDir = process.cwd(),
+      uiTheme = '',
       dangerouslySkipPermissions = false,
       resume = false,
       model = '',
@@ -74,7 +75,7 @@ class ClaudeBridge {
     // the client's onBell turns it into a beep + notification. Injected via
     // --settings so the user's own settings.json is untouched.
     baseArgs.push('--settings', JSON.stringify(
-      this.buildInjectedSettings(sessionId, { hookScript, hookPort, hookToken })
+      this.buildInjectedSettings(sessionId, { hookScript, hookPort, hookToken, uiTheme })
     ));
 
     // Optional model / permission-mode chosen in the UI. Whitelisted so a bad
@@ -326,8 +327,23 @@ class ClaudeBridge {
     return false;
   }
 
-  buildInjectedSettings(sessionId, { hookScript = '', hookPort = 0, hookToken = '' } = {}) {
+  // Claude's theme has to match the background WE paint, because the browser
+  // terminal is the background. On light we ask for `light-ansi` rather than
+  // `light`: the truecolor `light` theme rules its input box in #999999, which
+  // is 2.85:1 on our white canvas — effectively invisible, and nothing on our
+  // side can lift it (white is already the highest-contrast light background for
+  // that grey). The `-ansi` variant draws the same chrome in ANSI colours, which
+  // come from OUR palette, so contrast is ours to guarantee (ANSI 7 = #6e7781,
+  // 4.49:1). Dark needs no such help, so it keeps the richer truecolor theme.
+  static themeForUi(uiTheme) {
+    return uiTheme === 'light' ? 'light-ansi' : 'dark';
+  }
+
+  buildInjectedSettings(sessionId, { hookScript = '', hookPort = 0, hookToken = '', uiTheme = '' } = {}) {
     const settings = { preferredNotifChannel: 'terminal_bell' };
+    if (uiTheme === 'light' || uiTheme === 'dark') {
+      settings.theme = ClaudeBridge.themeForUi(uiTheme);
+    }
     if (hookScript && hookPort && hookToken) {
       // The token is passed to cc-hook.js via the CCWEB_HOOK_TOKEN env var (set
       // on the spawned Claude, inherited by its hooks), NOT on the command line:

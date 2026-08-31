@@ -823,7 +823,7 @@ class ClaudeCodeWebServer {
         break;
 
       case 'start_claude':
-        await this.startClaude(wsId, data.options || {}, data.cols, data.rows);
+        await this.startClaude(wsId, data.options || {}, data.cols, data.rows, data.uiTheme);
         break;
       
       case 'input':
@@ -1043,7 +1043,7 @@ class ClaudeCodeWebServer {
     }
   }
 
-  async startClaude(wsId, options, cols, rows) {
+  async startClaude(wsId, options, cols, rows, uiTheme) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return; // connection already gone — nobody to answer
     if (!wsInfo.claudeSessionId) {
@@ -1078,6 +1078,9 @@ class ClaudeCodeWebServer {
     try {
       await this.claudeBridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        // The browser terminal IS the background, so Claude's theme follows the
+        // UI's light/dark setting rather than the user's global settings.json.
+        uiTheme,
         // Wire the plan hook: Claude's ExitPlanMode PreToolUse event is relayed
         // by bin/cc-hook.js back to /api/hooks/:sessionId and broadcast to the UI.
         hookScript: path.join(__dirname, '..', 'bin', 'cc-hook.js'),

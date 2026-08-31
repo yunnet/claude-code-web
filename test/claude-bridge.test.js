@@ -99,6 +99,38 @@ describe('ClaudeBridge', function() {
     });
   });
 
+  describe('theme injection', function() {
+    // The browser terminal is the background Claude draws on, so Claude's theme
+    // has to follow the UI's, not the user's global settings.json.
+    it('maps the UI theme to a Claude theme', function() {
+      assert.strictEqual(ClaudeBridge.themeForUi('light'), 'light-ansi');
+      assert.strictEqual(ClaudeBridge.themeForUi('dark'), 'dark');
+    });
+
+    it('uses light-ansi, not light — light rules its input box at 2.85:1 on white', function() {
+      const s = bridge.buildInjectedSettings('sid', { uiTheme: 'light' });
+      assert.strictEqual(s.theme, 'light-ansi');
+    });
+
+    it('injects the dark theme for a dark UI', function() {
+      assert.strictEqual(bridge.buildInjectedSettings('sid', { uiTheme: 'dark' }).theme, 'dark');
+    });
+
+    it('injects no theme when the UI did not report one (older client)', function() {
+      assert.ok(!('theme' in bridge.buildInjectedSettings('sid', {})));
+      assert.ok(!('theme' in bridge.buildInjectedSettings('sid', { uiTheme: 'nonsense' })));
+    });
+
+    it('keeps the notification channel and hooks alongside the theme', function() {
+      const s = bridge.buildInjectedSettings('sid', {
+        uiTheme: 'light', hookScript: '/bin/cc-hook.js', hookPort: 1, hookToken: 't'
+      });
+      assert.strictEqual(s.preferredNotifChannel, 'terminal_bell');
+      assert.strictEqual(s.theme, 'light-ansi');
+      assert.ok(s.hooks.PreToolUse[0].hooks[0].command.includes('cc-hook.js'));
+    });
+  });
+
   describe('clearEmptyTranscript', function() {
     // The id is interpolated into paths this deletes — one of them recursively,
     // inside the user's home. Anything that isn't a uuid must be refused before
