@@ -35,6 +35,11 @@
       this.home = null;
       this.parent = null;
       this.bound = false;
+      // Where the explorer was last left, per session. The drawer opens on the
+      // project you are actually working in, not on wherever the server happens
+      // to have been launched — and switching tabs follows the new session
+      // instead of stranding you in the previous project's tree.
+      this.pathBySession = new Map();
     }
 
     el(id) { return document.getElementById(id); }
@@ -133,13 +138,25 @@
       document.addEventListener('pointercancel', endDrag);
     }
 
+    // The session the drawer is browsing on behalf of.
+    sessionKey() {
+      return (window.app && window.app.currentClaudeSessionId) || null;
+    }
+
+    // Reopen where this session was left; failing that, the session's own
+    // working directory; failing that, let the server pick (its base folder).
+    startPath() {
+      const key = this.sessionKey();
+      if (key && this.pathBySession.has(key)) return this.pathBySession.get(key);
+      return (window.app && window.app.currentWorkingDir) || undefined;
+    }
+
     open(startPath) {
       this.bind();
       const modal = this.el('fileExplorerModal');
       if (!modal) return;
       modal.classList.add('active');
-      // Resume where we were, else start at home (server default = baseFolder).
-      this.load(startPath || this.currentPath || undefined);
+      this.load(startPath || this.startPath());
     }
 
     close() {
@@ -165,6 +182,8 @@
         }
         const data = await res.json();
         this.currentPath = data.path;
+        const key = this.sessionKey();
+        if (key) this.pathBySession.set(key, data.path);
         this.parent = data.parent || null;
         this.home = data.home || this.home;
         this.el('explorerPathInput').value = data.path;

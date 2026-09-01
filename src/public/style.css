@@ -367,6 +367,17 @@ body {
     width: 44px;
     height: 44px;
 }
+/* The file explorer is a desktop affordance: hidden on mobile. Same definition
+   of "mobile" the floating ESC/MODE buttons use, so the term means one thing
+   across the app — note that covers a touch tablet up to 1024px, not just a
+   phone. */
+@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
+       (max-width: 768px) {
+    #explorerBtn {
+        display: none;
+    }
+}
+
 #explorerBtn svg,
 /* The button sets its own display, which outranks the UA's [hidden] rule — so
    spell it out, or syncSplitAvailability() hides nothing. */
