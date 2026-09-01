@@ -15,8 +15,10 @@
     t.innerHTML = svg;
     return t.content.firstElementChild;
   };
+  const DOWNLOAD_ICON = '<svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg>';
   const FOLDER_ICON_NODE = iconNode(FOLDER_ICON);
   const FILE_ICON_NODE = iconNode(FILE_ICON);
+  const DOWNLOAD_ICON_NODE = iconNode(DOWNLOAD_ICON);
 
   function formatSize(bytes) {
     if (!bytes) return '';
@@ -58,10 +60,19 @@
       // attach 2000 closures. Rows carry their target in data-path/data-type
       // (dataset, never innerHTML, so a crafted filename can't inject markup).
       this.el('explorerList').addEventListener('click', (e) => {
+        const dl = e.target.closest && e.target.closest('.row-download');
+        if (dl && dl.dataset.download) {
+          e.stopPropagation();
+          this.downloadFile(dl.dataset.download);
+          return;
+        }
         const row = e.target.closest && e.target.closest('.folder-item');
         if (!row || !row.dataset.path) return;
         if (row.dataset.type === 'dir') this.load(row.dataset.path);
-        else this.openFile(row.dataset.path);
+        else if (row.dataset.preview) this.openFile(row.dataset.path);
+        // Not previewable: the browser could only have downloaded it or shown a
+        // blank tab, so do the honest thing directly.
+        else this.downloadFile(row.dataset.path);
       });
 
       // Esc closes while the explorer is open.
@@ -215,16 +226,33 @@
           row.appendChild(link);
         }
 
+        const full = this.join(this.currentPath, item.name);
+
         if (item.type === 'file') {
           const size = document.createElement('span');
           size.className = 'folder-size';
           size.textContent = formatSize(item.size);
           row.appendChild(size);
-          row.title = 'Open in a new tab';
+
+          // Always present, never hover-revealed: this is used on a phone, where
+          // there is no hover and a long-press is both undiscoverable and in the
+          // way of text selection.
+          const dl = document.createElement('button');
+          dl.type = 'button';
+          dl.className = 'row-download';
+          dl.dataset.download = full;
+          dl.title = 'Download';
+          dl.setAttribute('aria-label', `Download ${item.name}`);
+          dl.appendChild(DOWNLOAD_ICON_NODE.cloneNode(true));
+          row.appendChild(dl);
+
+          const previewable = this.canPreview(full);
+          row.dataset.preview = previewable ? '1' : '';
+          row.title = previewable ? 'Open in a new tab' : 'Download';
         }
 
         row.dataset.type = item.type;
-        row.dataset.path = this.join(this.currentPath, item.name);
+        row.dataset.path = full;
         frag.appendChild(row);
       }
 
@@ -246,9 +274,50 @@
     // token, because a rendered page can read its own location.
     static get RENDERED_EXTS() { return ['.html', '.htm', '.svg']; }
 
+    // What the server can actually display. Everything else falls through to
+    // application/octet-stream, where "preview" only ever produced a download or
+    // a blank tab — so those rows say what they really do.
+    static get PREVIEW_EXTS() {
+      return ['.txt', '.log', '.md', '.markdown', '.json', '.js', '.mjs', '.cjs', '.ts', '.tsx',
+              '.jsx', '.css', '.scss', '.less', '.xml', '.yml', '.yaml', '.sh', '.bash', '.zsh',
+              '.py', '.rb', '.go', '.rs', '.java', '.kt', '.c', '.h', '.cc', '.cpp', '.hpp',
+              '.cs', '.php', '.pl', '.lua', '.r', '.ini', '.conf', '.cfg', '.toml', '.env',
+              '.sql', '.csv', '.tsv', '.gitignore', '.dockerfile', '.makefile',
+              '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.pdf',
+              '.html', '.htm', '.svg'];
+    }
+
+    canPreview(filePath) {
+      const name = String(filePath || '').toLowerCase();
+      return FileExplorer.PREVIEW_EXTS.some((ext) => name.endsWith(ext));
+    }
+
     isRendered(filePath) {
       const name = String(filePath || '').toLowerCase();
       return FileExplorer.RENDERED_EXTS.some((ext) => name.endsWith(ext));
+    }
+
+    // Save a file. Goes through a single-use ticket rather than the auth-token
+    // URL, because a download URL is recorded in the browser's download history
+    // and its download manager — longer-lived than a tab — so whatever is left
+    // there must already be spent.
+    async downloadFile(filePath) {
+      const name = String(filePath).split('/').filter(Boolean).pop() || 'file';
+      const toast = (msg, err) => { try { window.app && window.app.showToast(msg, err); } catch (_) {} };
+      if (!(window.authManager && window.authManager.getFileTicket)) {
+        toast('Download is unavailable', true);
+        return;
+      }
+      toast(`Downloading ${name}`);
+      const ticket = await window.authManager.getFileTicket(filePath, { download: true });
+      if (!ticket) { toast(`Could not download ${name}`, true); return; }
+      const a = document.createElement('a');
+      a.href = `/api/fs/file/${encodeURIComponent(ticket)}/${encodeURIComponent(filePath)}`;
+      a.download = name;          // the server also sets Content-Disposition
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 0);
     }
 
     openFile(filePath) {

@@ -19,7 +19,16 @@ function mockRes() {
       }
       this.headers[k] = v;
     },
-    send(b) { this.body = b; return this; }
+    send(b) { this.body = b; return this; },
+    // Enough of a Writable for `stream.pipe(res)` to run: the download path
+    // streams from disk instead of buffering the file, so a double that only
+    // knows send() would report a spurious failure.
+    on() { return this; },
+    once() { return this; },
+    emit() { return true; },
+    write(chunk) { this.body = (this.body || Buffer.alloc(0)); 
+                   this.body = Buffer.concat([Buffer.from(this.body), Buffer.from(chunk)]); return true; },
+    end(chunk) { if (chunk) this.write(chunk); this.ended = true; return this; }
   };
 }
 
@@ -223,6 +232,60 @@ describe('file explorer: serveFile', function() {
     } finally {
       if (typeof authed.dispose === 'function') authed.dispose();
     }
+  });
+
+  // Downloads: an attachment is never rendered, is not size-capped, and — like
+  // rendering — only happens for a ticket, so the URL left in the browser's
+  // download history is already spent.
+  it('serves a download ticket as an attachment, not as content to render', function() {
+    const tRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'page.html'), download: true } }, tRes);
+
+    const res = mockRes();
+    server.serveFile(reqParams({ token: tRes.body.ticket, file: path.join(root, 'page.html') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'application/octet-stream');
+    assert.ok(/^attachment;/.test(res.headers['Content-Disposition']), res.headers['Content-Disposition']);
+    assert.ok(!res.headers['Content-Security-Policy'], 'an attachment needs no sandbox');
+  });
+
+  it('a plain ticket still previews — download is opt-in', function() {
+    const tRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'page.html') } }, tRes);
+    const res = mockRes();
+    server.serveFile(reqParams({ token: tRes.body.ticket, file: path.join(root, 'page.html') }), res);
+    assert.strictEqual(res.headers['Content-Type'], 'text/html; charset=utf-8');
+    assert.ok(/^inline;/.test(res.headers['Content-Disposition']));
+  });
+
+  it('lifts the 10 MB preview cap for downloads', function() {
+    const big = path.join(root, 'big.bin');
+    fs.writeFileSync(big, Buffer.alloc(11 * 1024 * 1024, 0x41));
+
+    // preview still refuses it
+    const preview = mockRes();
+    server.serveFile(reqParams({ file: big }), preview);
+    assert.strictEqual(preview.statusCode, 413, 'preview stays capped');
+
+    // download does not
+    const tRes = mockRes();
+    server.createFileTicket({ body: { path: big, download: true } }, tRes);
+    const res = mockRes();
+    server.serveFile(reqParams({ token: tRes.body.ticket, file: big }), res);
+    assert.notStrictEqual(res.statusCode, 413, 'a download must not be capped');
+    assert.ok(/^attachment;/.test(res.headers['Content-Disposition'] || ''),
+      res.headers['Content-Disposition']);
+    assert.strictEqual(res.headers['Content-Length'], 11 * 1024 * 1024);
+  });
+
+  it('a download ticket is single-use like any other', function() {
+    const tRes = mockRes();
+    server.createFileTicket({ body: { path: path.join(root, 'a.txt'), download: true } }, tRes);
+    const first = mockRes();
+    server.serveFile(reqParams({ token: tRes.body.ticket, file: path.join(root, 'a.txt') }), first);
+    assert.ok(/^attachment;/.test(first.headers['Content-Disposition']));
+    const replay = mockRes();
+    server.serveFile(reqParams({ token: tRes.body.ticket, file: path.join(root, 'a.txt') }), replay);
+    assert.ok(!/^attachment;/.test(replay.headers['Content-Disposition'] || ''), 'replay must not download');
   });
 
   it('will not render a different file than the ticket was minted for', function() {

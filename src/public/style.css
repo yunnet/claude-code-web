@@ -1763,6 +1763,41 @@ body {
     border-color: var(--border);
 }
 
+/* Per-row download button. Always visible, never hover-revealed: this is a
+   phone-first UI, where hover doesn't exist and a long-press would be both
+   undiscoverable and in the way of selecting the filename. Sized to a real
+   touch target rather than to the glyph. */
+.row-download {
+    flex-shrink: 0;
+    margin-left: 8px;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0;
+    transition: background-color 0.08s ease, color 0.08s ease, border-color 0.08s ease;
+}
+.row-download .dl-icon { width: 16px; height: 16px; }
+.row-download:hover {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border);
+    color: var(--text-primary);
+}
+.folder-item:hover .row-download { color: white; }
+.folder-item:hover .row-download:hover { color: var(--text-primary); }
+
+@media (max-width: 768px) {
+    /* 44px is the smallest reliable thumb target. */
+    .row-download { width: 44px; height: 44px; margin-left: 4px; }
+    .row-download .dl-icon { width: 18px; height: 18px; }
+}
+
 /* File size shown at the right of a file row in the explorer. Inherits the
    hover text colour from .folder-item:hover so it stays readable. */
 .folder-size {

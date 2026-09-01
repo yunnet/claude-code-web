@@ -1438,6 +1438,16 @@ class ClaudeCodeWebServer {
       const real = fs.realpathSync(validation.path);
       const stat = fs.statSync(real);
       if (!stat.isFile()) return res.status(404).json({ error: 'Not found' });
+
+      // Download: hand the bytes over as an attachment. No render, so no CSP
+      // and no content sniffing to worry about — and no size cap either, since
+      // the reason to cap a preview (don't paint half a gigabyte) doesn't apply
+      // to saving a file. Streamed rather than read whole: this server is
+      // single-threaded and shared, and readFileSync on a large file blocks it.
+      if (ticket && ticket.download && ticket.real === real) {
+        return this.sendAttachment(res, real, stat.size);
+      }
+
       if (stat.size > 10 * 1024 * 1024) return res.status(413).json({ error: 'File too large' });
       // Render only via a ticket that matches this exact file (and is now spent).
       // Deliberately not relaxed for --disable-auth: one rule for every mode beats
@@ -1451,12 +1461,34 @@ class ClaudeCodeWebServer {
     }
   }
 
+  // Stream a file to the browser as a download. Same header hygiene as
+  // sendInlineFile (nosniff, no-referrer, RFC 5987 name for non-ASCII), but
+  // `attachment`, which also guarantees the browser never renders it.
+  sendAttachment(res, realPath, size) {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Length', size);
+    res.setHeader('Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(realPath))}`);
+    const stream = fs.createReadStream(realPath);
+    stream.on('error', () => { if (!res.headersSent) res.status(404).json({ error: 'Not found' }); else res.destroy(); });
+    res.on('close', () => stream.destroy());   // client went away mid-download
+    return stream.pipe(res);
+  }
+
   // POST /api/fs/ticket {path} — mint a single-use, 30s credential for ONE file.
   // Normal header auth. Kept deliberately worthless: bound to one realpath, spent
   // on first read, so a rendered page that scrapes it out of its own URL gains
   // nothing. This is what keeps the long-lived auth token out of rendered URLs.
   createFileTicket(req, res) {
     const requested = (req.body && req.body.path) || '';
+    // A download ticket serves the file as an attachment instead of rendering
+    // it. Downloads land in the browser's download history, which outlives a
+    // tab, so they get a ticket for the same reason rendering does: whatever
+    // ends up recorded there must be spent already.
+    const download = !!(req.body && req.body.download);
     const validation = this.validatePath(requested);
     if (!validation.valid) return res.status(404).json({ error: 'Not found' });
     let real;
@@ -1468,7 +1500,7 @@ class ClaudeCodeWebServer {
     }
     this.pruneFileTickets();
     const ticket = `t_${uuidv4().replace(/-/g, '')}`;
-    this.fileTickets.set(ticket, { real, expires: Date.now() + 30000 });
+    this.fileTickets.set(ticket, { real, download, expires: Date.now() + 30000 });
     return res.json({ ticket, expiresInMs: 30000 });
   }
 

@@ -249,12 +249,12 @@ class AuthManager {
     // this in the URL is what makes rendering html/svg safe: the rendered page
     // can read its own location, and all it finds there is a spent credential.
     // Resolves null on any failure — the caller falls back to the source view.
-    async getFileTicket(filePath) {
+    async getFileTicket(filePath, { download = false } = {}) {
         try {
             const res = await fetch('/api/fs/ticket', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...this.getAuthHeaders() },
-                body: JSON.stringify({ path: filePath })
+                body: JSON.stringify({ path: filePath, download })
             });
             if (!res.ok) return null;
             const data = await res.json();
