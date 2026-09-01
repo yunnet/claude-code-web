@@ -379,15 +379,15 @@ body {
 }
 
 #explorerBtn svg,
+#layoutBtn svg {
+    width: 24px;
+    height: 24px;
+}
+
 /* The button sets its own display, which outranks the UA's [hidden] rule — so
    spell it out, or syncSplitAvailability() hides nothing. */
 #layoutBtn[hidden] {
     display: none;
-}
-
-#layoutBtn svg {
-    width: 24px;
-    height: 24px;
 }
 
 /* Tab Overflow Dropdown for Mobile */
