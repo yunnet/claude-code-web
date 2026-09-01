@@ -11,6 +11,7 @@
     --warning: #d29922;
     --border: #30363d;
     --border-hover: #484f58;
+    --fab-ink: #0d1117;
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
 }
 
@@ -27,6 +28,7 @@
     --warning: #a16207;
     --border: #e6e7eb;
     --border-hover: #d4d6db;
+    --fab-ink: #ffffff;
 }
 
 * {
@@ -2264,12 +2266,12 @@ pre, code {
     align-items: center;
     justify-content: center;
     padding: 12px;
-    background-color: var(--bg-secondary);
-    color: var(--success);
+    background-color: var(--success);
+    color: var(--fab-ink);
     border: 2px solid var(--success);
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
     transition: all 0.3s ease;
     width: 56px;
     height: 56px;
@@ -2290,7 +2292,7 @@ pre, code {
 }
 
 .mode-switcher-btn:hover {
-    background-color: var(--bg-tertiary);
+    filter: brightness(1.08);
     border-color: var(--success);
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
@@ -2324,8 +2326,8 @@ pre, code {
     align-items: center;
     justify-content: center;
     padding: 12px;
-    background-color: var(--bg-secondary);
-    color: var(--error);
+    background-color: var(--error);
+    color: var(--fab-ink);
     border: 2px solid var(--error);
     border-radius: 50%;
     cursor: pointer;
@@ -2336,8 +2338,8 @@ pre, code {
 }
 
 .escape-btn:hover {
-    background-color: var(--bg-tertiary);
-    border-color: #ff4444;
+    filter: brightness(1.08);
+    border-color: var(--error);
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(255, 68, 68, 0.2);
 }
