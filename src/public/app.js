@@ -15,7 +15,6 @@ class ClaudeCodeWebInterface {
         this.claudeSessions = [];
         this.isCreatingNewSession = false;
         this.isMobile = this.detectMobile();
-        this.currentMode = 'chat';
         this.planDetector = null;
         this.planModal = null;
         // Aliases for assistants (populated from /api/config)
@@ -227,20 +226,24 @@ class ClaudeCodeWebInterface {
             const modeSwitcher = document.createElement('div');
             modeSwitcher.id = 'modeSwitcher';
             modeSwitcher.className = 'mode-switcher';
+            // Label these, don't decorate them: on a phone there is no hover, so a
+            // `title` is invisible and a glyph has to carry the whole meaning. The
+            // old pair (an info "i" and a close "X") said nothing about sending Esc
+            // or cycling modes. Keys get key labels; the cycle gets cycle arrows.
             modeSwitcher.innerHTML = `
-                <button id="escapeBtn" class="escape-btn" title="Send Escape key">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="8" x2="12" y2="12"/>
-                        <line x1="12" y1="16" x2="12.01" y2="16"/>
-                    </svg>
+                <button id="escapeBtn" class="escape-btn" type="button"
+                        title="Send the Esc key" aria-label="Send the Esc key">
+                    <span class="fab-key">ESC</span>
                 </button>
-                <button id="modeSwitcherBtn" class="mode-switcher-btn" data-mode="${this.currentMode}" title="Switch mode (Shift+Tab)">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="9" y1="9" x2="15" y2="15"/>
-                        <line x1="15" y1="9" x2="9" y2="15"/>
+                <button id="modeSwitcherBtn" class="mode-switcher-btn" type="button"
+                        title="Cycle permission mode (Shift+Tab)" aria-label="Cycle permission mode (Shift+Tab)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <polyline points="1 20 1 14 7 14"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                     </svg>
+                    <span class="fab-caption">MODE</span>
                 </button>
             `;
             document.body.appendChild(modeSwitcher);
@@ -274,21 +277,15 @@ class ClaudeCodeWebInterface {
         }
     }
     
+    // Send Shift+Tab, which is what cycles Claude's permission mode. We do NOT
+    // track which mode that lands on: the client used to cycle a private
+    // chat/code/plan counter and colour the button from it, but nothing kept it in
+    // step with Claude (whose cycle isn't those three anyway), so the badge and the
+    // tooltip were routinely wrong. The status line in the terminal is the truth.
     switchMode() {
-        // Toggle between modes
-        const modes = ['chat', 'code', 'plan'];
-        const currentIndex = modes.indexOf(this.currentMode);
-        const nextIndex = (currentIndex + 1) % modes.length;
-        this.currentMode = modes[nextIndex];
-        
-        // Update button data attribute for styling
         const btn = document.getElementById('modeSwitcherBtn');
-        if (btn) {
-            btn.setAttribute('data-mode', this.currentMode);
-            btn.title = `Switch mode (Shift+Tab) - Current: ${this.currentMode.charAt(0).toUpperCase() + this.currentMode.slice(1)}`;
-        }
-        
-        // Send Shift+Tab to terminal to trigger actual mode switch in Claude Code
+
+        // Send Shift+Tab to terminal to trigger the actual mode switch in Claude Code
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             // Send Shift+Tab key combination (ESC[Z is the terminal sequence for Shift+Tab)
             this.send({ type: 'input', data: '\x1b[Z' });

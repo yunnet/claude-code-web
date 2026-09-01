@@ -2271,6 +2271,35 @@ pre, code {
     transition: all 0.3s ease;
     width: 56px;
     height: 56px;
+    flex-direction: column;
+    gap: 1px;
+    padding: 8px;
+}
+
+.mode-switcher-btn svg {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+/* Small caption under the mark. There is no hover on a phone, so the button has
+   to say what it does on its face; `title` alone is unreachable there. */
+.fab-caption {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    opacity: 0.75;
+}
+
+/* The Esc button is a key, so it wears the key's name — clearer than any glyph. */
+.fab-key {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    color: var(--error);
 }
 
 .mode-switcher-btn:hover {
@@ -2308,18 +2337,6 @@ pre, code {
     flex-shrink: 0;
 }
 
-/* Add visual indicator for current mode */
-.mode-switcher-btn[data-mode="chat"] {
-    border-color: var(--success);
-}
-
-.mode-switcher-btn[data-mode="code"] {
-    border-color: var(--accent);
-}
-
-.mode-switcher-btn[data-mode="plan"] {
-    border-color: var(--warning);
-}
 
 /* Escape Button Styles */
 .escape-btn {
@@ -2366,11 +2383,5 @@ pre, code {
     }
 }
 
-.escape-btn svg {
-    width: 24px;
-    height: 24px;
-    stroke: var(--error);
-    flex-shrink: 0;
-}
 
 /* Commands UI removed */
