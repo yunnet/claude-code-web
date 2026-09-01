@@ -392,6 +392,32 @@ class SplitContainer {
         
         // Setup keyboard shortcuts
         this.setupKeyboardShortcuts();
+
+        // Splitting is a width question, not a device question: a tablet in
+        // landscape can carry two panes, a phone cannot. Re-evaluate on resize
+        // and rotation, and fold an open split away if the window gets too narrow
+        // (otherwise a rotation leaves two unusable slivers).
+        this.syncSplitAvailability();
+        window.addEventListener('resize', () => this.syncSplitAvailability());
+        window.addEventListener('orientationchange', () => this.syncSplitAvailability());
+    }
+
+    // Two panes each need enough columns to be worth reading — about 40 at the
+    // default cell width, so roughly 700px once the divider is counted. Below
+    // that a split produces two unreadable slivers, so the feature steps aside.
+    static get MIN_SPLIT_WIDTH() { return 700; }
+
+    canSplit() {
+        return window.innerWidth >= SplitContainer.MIN_SPLIT_WIDTH;
+    }
+
+    // Hide the entry point when it can't lead anywhere, and retreat to one pane
+    // if the window has shrunk under an existing split.
+    syncSplitAvailability() {
+        const ok = this.canSplit();
+        const btn = document.getElementById('layoutBtn');
+        if (btn) btn.hidden = !ok;
+        if (!ok && this.enabled) this.closeSplit();
     }
 
     createSplitElements() {
@@ -528,6 +554,7 @@ class SplitContainer {
     }
 
     async applyPreset(orientation) {
+        if (!this.canSplit()) return;
         if (this.enabled) {
             this.setOrientation(orientation);
             return;
@@ -542,6 +569,7 @@ class SplitContainer {
     }
 
     openLayoutMenu(anchorEl) {
+        if (!this.canSplit()) return;
         document.querySelectorAll('.pane-session-menu').forEach(m => m.remove());
         const menu = document.createElement('div');
         menu.className = 'pane-session-menu';
@@ -552,9 +580,9 @@ class SplitContainer {
             el.onclick = () => { try { fn(); } finally { menu.remove(); } };
             menu.appendChild(el);
         };
-        addItem('\u5355\u5c4f', () => this.closeSplit(), !this.enabled);
-        addItem('\u5de6\u53f3\u5206\u5c4f', () => this.applyPreset('horizontal'), this.enabled && this.orientation === 'horizontal');
-        addItem('\u4e0a\u4e0b\u5206\u5c4f', () => this.applyPreset('vertical'), this.enabled && this.orientation === 'vertical');
+        addItem('Single', () => this.closeSplit(), !this.enabled);
+        addItem('Split left / right', () => this.applyPreset('horizontal'), this.enabled && this.orientation === 'horizontal');
+        addItem('Split top / bottom', () => this.applyPreset('vertical'), this.enabled && this.orientation === 'vertical');
         document.body.appendChild(menu);
         const rect = anchorEl ? anchorEl.getBoundingClientRect() : { bottom: 60, left: 60 };
         menu.style.top = `${rect.bottom + 4}px`;
@@ -600,6 +628,7 @@ class SplitContainer {
 
     async createSplit(sessionId, orientation) {
         if (this.enabled) return; // Already split
+        if (!this.canSplit()) return; // too narrow to be usable — see canSplit()
 
         this.enabled = true;
         if (orientation === 'horizontal' || orientation === 'vertical') {
@@ -801,7 +830,7 @@ class SplitContainer {
                 e.preventDefault();
                 if (this.enabled) {
                     this.closeSplit();
-                } else {
+                } else if (this.canSplit()) {
                     this.applyPreset('horizontal');
                 }
             }
@@ -885,6 +914,7 @@ class SplitContainer {
             !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('application/x-session-id');
 
         terminalContainer.addEventListener('dragover', (e) => {
+            if (!this.canSplit()) return; // no drop hint for a split we'd refuse
             if (this.enabled || !isSessionDrag(e)) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
