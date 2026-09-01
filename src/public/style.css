@@ -2265,8 +2265,8 @@ pre, code {
     justify-content: center;
     padding: 12px;
     background-color: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 2px solid var(--border);
+    color: var(--success);
+    border: 2px solid var(--success);
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -2291,7 +2291,7 @@ pre, code {
     font-weight: 700;
     letter-spacing: 0.06em;
     line-height: 1;
-    opacity: 0.75;
+    opacity: 0.9;
 }
 
 /* The Esc button is a key, so it wears the key's name — clearer than any glyph. */
@@ -2306,7 +2306,7 @@ pre, code {
 
 .mode-switcher-btn:hover {
     background-color: var(--bg-tertiary);
-    border-color: var(--accent);
+    border-color: var(--success);
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
@@ -2325,7 +2325,7 @@ pre, code {
     }
     50% {
         transform: scale(0.95);
-        background-color: var(--accent);
+        background-color: var(--success);
     }
     100% {
         transform: scale(1);
