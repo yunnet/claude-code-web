@@ -227,9 +227,12 @@ class ClaudeCodeWebInterface {
             modeSwitcher.id = 'modeSwitcher';
             modeSwitcher.className = 'mode-switcher';
             // Label these, don't decorate them: on a phone there is no hover, so a
-            // `title` is invisible and a glyph has to carry the whole meaning. The
-            // old pair (an info "i" and a close "X") said nothing about sending Esc
-            // or cycling modes. Keys get key labels; the cycle gets cycle arrows.
+            // `title` is invisible and a glyph would have to carry the whole
+            // meaning. The old pair (an info "i" and a close "X") said nothing
+            // about sending Esc or cycling modes. Both are keystroke buttons, and
+            // Esc in particular has no honest icon — an X reads as "close", an
+            // arrow as "back" — so the set is worded, not drawn, and the two share
+            // one treatment so they read as a pair. Colour carries the identity.
             modeSwitcher.innerHTML = `
                 <button id="escapeBtn" class="escape-btn" type="button"
                         title="Send the Esc key" aria-label="Send the Esc key">
@@ -237,13 +240,7 @@ class ClaudeCodeWebInterface {
                 </button>
                 <button id="modeSwitcherBtn" class="mode-switcher-btn" type="button"
                         title="Cycle permission mode (Shift+Tab)" aria-label="Cycle permission mode (Shift+Tab)">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <polyline points="23 4 23 10 17 10"/>
-                        <polyline points="1 20 1 14 7 14"/>
-                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                    </svg>
-                    <span class="fab-caption">MODE</span>
+                    <span class="fab-key">MODE</span>
                 </button>
             `;
             document.body.appendChild(modeSwitcher);
