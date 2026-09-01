@@ -247,6 +247,7 @@ class ClaudeCodeWebInterface {
                 </button>
             `;
             document.body.appendChild(modeSwitcher);
+            this.positionModeSwitcher();
             
             // Add event listener for mode switcher
             document.getElementById('modeSwitcherBtn').addEventListener('click', () => {
@@ -260,6 +261,38 @@ class ClaudeCodeWebInterface {
         }
     }
     
+    // Park the button stack directly above Claude's input box rather than on top
+    // of it, leaving the same gap between the two buttons and between the lower
+    // button and the box's top rule. The box is terminal CONTENT, not DOM, so its
+    // position can't be hard-coded — it moves with the font size, the row count
+    // and the soft keyboard — and has to be measured from the buffer each time
+    // the terminal reflows.
+    positionModeSwitcher() {
+        const sw = document.getElementById('modeSwitcher');
+        const term = this.terminal;
+        if (!sw || !term || !term.element || !term.rows) return;
+        const rect = term.element.getBoundingClientRect();
+        if (!rect.height) return;
+        const rowH = rect.height / term.rows;
+        const buf = term.buffer.active;
+
+        // Claude fences its input box with two horizontal rules and puts the
+        // status line under it. The topmost rule in the last dozen rows marks the
+        // top of everything we must stay clear of.
+        let boxTop = null;
+        for (let y = term.rows - 1, scanned = 0; y >= 0 && scanned < 12; y--, scanned++) {
+            const line = buf.getLine(buf.viewportY + y);
+            if (line && line.translateToString(true).trim().startsWith('─')) boxTop = y;
+        }
+        // No box on screen (Claude not started, or a plain shell): still keep off
+        // the last two rows so the prompt is never covered.
+        const rowsToClear = term.rows - (boxTop === null ? term.rows - 2 : boxTop);
+        const cs = getComputedStyle(sw);
+        const gap = parseFloat(cs.rowGap) || parseFloat(cs.gap) || 10;
+        const belowTerminal = Math.max(0, window.innerHeight - rect.bottom);
+        sw.style.bottom = Math.round(belowTerminal + rowsToClear * rowH + gap) + 'px';
+    }
+
     sendEscape() {
         // Send ESC key to terminal
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -470,6 +503,18 @@ class ClaudeCodeWebInterface {
                 }
             }
         });
+
+        // The input box moves as content reflows, so re-park the mobile buttons
+        // on render — coalesced to one measurement per frame.
+        if (this.isMobile) {
+            this.terminal.onRender(() => {
+                if (this._fabPlaceScheduled) return;
+                this._fabPlaceScheduled = requestAnimationFrame(() => {
+                    this._fabPlaceScheduled = null;
+                    this.positionModeSwitcher();
+                });
+            });
+        }
 
         this.terminal.onResize(({ cols, rows }) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -1382,6 +1427,7 @@ class ClaudeCodeWebInterface {
                 if (this.terminal) {
                     try { this.terminal.scrollToBottom(); } catch (_) {}
                 }
+                this.positionModeSwitcher();
             });
         };
 

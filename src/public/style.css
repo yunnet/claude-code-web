@@ -2241,7 +2241,9 @@ pre, code {
 /* Mode Switcher Styles */
 .mode-switcher {
     position: fixed;
-    bottom: 80px; /* Increased from 20px to avoid covering text input */
+    /* Fallback only — positionModeSwitcher() measures Claude's input box and
+       overrides this so the stack sits above the box, never across it. */
+    bottom: 80px;
     right: 20px;
     z-index: 1000;
     display: none;
