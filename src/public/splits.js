@@ -155,6 +155,12 @@ class Split {
 
         this.terminal.open(terminalDiv);
 
+        // Split panes need the same touch scrolling the main terminal gets —
+        // it was only ever wired to #terminal, so swiping a pane did nothing.
+        if (this.app && this.app.isMobile && typeof this.app.setupMobileTouchScroll === 'function') {
+            this.app.setupMobileTouchScroll(terminalDiv, this.terminal);
+        }
+
         // Make plan-file paths in output clickable (open the .md in a new tab).
         registerPlanLinks(this.terminal, () => this.sessionId);
 

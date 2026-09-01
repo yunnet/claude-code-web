@@ -72,7 +72,6 @@ class ClaudeCodeWebInterface {
         this.setupPlanDetector();
         this.loadSettings();
         this.applyAliasesToUI();
-        this.disablePullToRefresh();
         
         // Show loading while we initialize
         this.showOverlay('loadingSpinner');
@@ -189,35 +188,6 @@ class ClaudeCodeWebInterface {
         const smallViewport = window.innerWidth <= 1024;
         
         return hasTouchScreen && (mobileUserAgent || smallViewport);
-    }
-    
-    disablePullToRefresh() {
-        // Prevent pull-to-refresh on touchmove
-        let lastY = 0;
-        
-        document.addEventListener('touchstart', (e) => {
-            lastY = e.touches[0].clientY;
-        }, { passive: false });
-        
-        document.addEventListener('touchmove', (e) => {
-            const y = e.touches[0].clientY;
-            const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
-            
-            // Prevent pull-to-refresh when at the top and trying to scroll up
-            if (scrollTop === 0 && y > lastY) {
-                e.preventDefault();
-            }
-            
-            lastY = y;
-        }, { passive: false });
-        
-        // Also prevent overscroll on the terminal element
-        const terminal = document.getElementById('terminal');
-        if (terminal) {
-            terminal.addEventListener('touchmove', (e) => {
-                e.stopPropagation();
-            }, { passive: false });
-        }
     }
     
     showModeSwitcher() {
@@ -669,6 +639,11 @@ class ClaudeCodeWebInterface {
     setupMobileTouchScroll(termEl, terminal) {
         if (!termEl || !terminal) return;
         let startY = null, lastY = null, lastT = 0, scrolling = false;
+        // Where the gesture is on screen. The synthetic wheel has to carry this:
+        // a full-screen TUI decides whether (and what) to scroll from the cell the
+        // pointer is over, so a fixed point meant we always claimed the top-left
+        // corner no matter where the user actually swiped.
+        let ptX = 0, ptY = 0;
         let velocity = 0;          // finger speed in px/ms (sign: + = moving down)
         let momentumRAF = null;
         let acc = 0;               // leftover fractional pixels → whole lines
@@ -695,9 +670,14 @@ class ClaudeCodeWebInterface {
             if (terminal.buffer.active.type === 'alternate') {
                 const el = wheelTarget();
                 const deltaY = lines > 0 ? -120 : 120; // older → wheel up
+                // Fall back to the middle of the terminal if we somehow have no
+                // touch point — never the corner, which may not be scrollable.
+                const box = el.getBoundingClientRect();
+                const x = ptX || Math.round(box.left + box.width / 2);
+                const y = ptY || Math.round(box.top + box.height / 2);
                 for (let i = Math.abs(lines); i > 0; i--) {
                     el.dispatchEvent(new WheelEvent('wheel', {
-                        deltaY, deltaMode: 0, clientX: 40, clientY: 80, bubbles: true, cancelable: true
+                        deltaY, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true
                     }));
                 }
             } else {
@@ -713,6 +693,7 @@ class ClaudeCodeWebInterface {
         termEl.addEventListener('touchstart', (e) => {
             stopMomentum(); // a new touch halts any ongoing glide (native feel)
             if (e.touches.length === 1) {
+                ptX = e.touches[0].clientX; ptY = e.touches[0].clientY;
                 startY = lastY = e.touches[0].clientY;
                 lastT = performance.now();
                 scrolling = false; velocity = 0; acc = 0;
@@ -722,6 +703,7 @@ class ClaudeCodeWebInterface {
         termEl.addEventListener('touchmove', (e) => {
             if (e.touches.length !== 1 || lastY === null) return;
             const y = e.touches[0].clientY;
+            ptX = e.touches[0].clientX; ptY = y;
             if (!scrolling && Math.abs(y - startY) < THRESHOLD) return;
             scrolling = true;
             const now = performance.now();
