@@ -108,7 +108,34 @@ describe('git-branches', function () {
 
     it('caps the listing so a huge directory cannot stall the server', function () {
       assert.ok(gitBranches.MAX_REPOS <= 100, 'repo cap stays small');
-      assert.ok(gitBranches.MAX_ENTRIES <= 2000, 'entry cap stays small');
+      // Matches listDirectory's MAX_ITEMS, which already accepts one stat per
+      // entry at this size (measured 40ms for 2001 entries).
+      assert.strictEqual(gitBranches.MAX_ENTRIES, 2000);
+    });
+
+    it('never lets the entry cap hide a repository in silence', function () {
+      // The cap used to eat real repositories AND misreport the loss: 600 plain
+      // directories ahead of one repo gave "0 repos, truncated 101", where 101
+      // counted plain directories that were never candidates. The two counts
+      // are now distinct, so a partial scan is visible as a partial scan.
+      const many = path.join(root, 'many');
+      fs.mkdirSync(many);
+      for (let i = 0; i < gitBranches.MAX_ENTRIES + 5; i++) fs.mkdirSync(path.join(many, `d${String(i).padStart(5, '0')}`));
+
+      const result = gitBranches.scanBranches(many);
+      assert.strictEqual(result.truncated, 0, 'no repository was found, so none was dropped');
+      assert.ok(result.unexamined > 0, 'the directories past the cap are reported, not hidden');
+      assert.strictEqual(result.unexamined, 5, 'and the count is of unexamined dirs, not of repos');
+    });
+
+    it('counts truncated as repositories dropped, never as plain directories', function () {
+      const lots = path.join(root, 'lots');
+      fs.mkdirSync(lots);
+      for (let i = 0; i < gitBranches.MAX_REPOS + 3; i++) makeRepo(path.join(lots, `r${String(i).padStart(3, '0')}`));
+      const result = gitBranches.scanBranches(lots);
+      assert.strictEqual(result.repos.length, gitBranches.MAX_REPOS);
+      assert.strictEqual(result.truncated, 3, 'exactly the repos that did not fit');
+      assert.strictEqual(result.unexamined, 0, 'nothing went unexamined');
     });
 
     it('never hands back a HEAD that is neither a ref nor a sha', function () {

@@ -936,6 +936,17 @@ class SessionTabManager {
             if (session) {
                 session.name = newName;
             }
+
+            // Persist it. Until now the new name lived only in this browser's
+            // memory: the tab state in localStorage keeps ids and nothing else,
+            // so a reload dropped the rename, and it never reached
+            // sessions.json or any other device. Best-effort — the tab already
+            // shows the new name, and a failed write should not undo that.
+            fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...window.authManager.getAuthHeaders() },
+                body: JSON.stringify({ name: newName })
+            }).catch(err => console.warn('[renameTab] could not persist the name:', err));
         };
         
         input.addEventListener('blur', saveNewName);

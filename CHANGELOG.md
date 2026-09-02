@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [4.1.2] - 2026-09-02
+
+Review of 4.1.0-4.1.1. Nine findings, all fixed.
+
+### Fixed
+- **One GET could kill the whole server.** `GET /api/git/branches?path=a&path=b`
+  ended the process: a repeated query parameter arrives as an Array, `path.resolve`
+  throws on it, and `listBranches` was the only `async` handler touching user
+  input — Express 4 does not catch a rejected async handler, so it became an
+  unhandledRejection and Node 22 exited, taking every live PTY with it. (The
+  synchronous `/api/fs/list`, given the same input, answers 500 and lives.) The
+  parameter shape is now rejected with a 400, and every async route goes through
+  an `asyncRoute` wrapper so a throw ends as a 500. `/api/sessions/persistence`,
+  which had the same unguarded shape, is wrapped too.
+- **The directory-entry cap silently ate repositories.** 600 plain directories
+  ahead of one repo reported `0 repos, truncated 101` — the repo was never
+  examined, and 101 counted plain directories that were never candidates. The
+  counts are now distinct (`truncated` = repositories dropped, `unexamined` =
+  directories never looked at), the cap rose from 500 to 2000 to match
+  `listDirectory`'s existing `MAX_ITEMS` (measured 40ms for 2001 entries), and
+  the panel now says when a scan was partial instead of looking complete.
+- **A slow branch response could repaint over a newer one.** Start a "Check
+  changes" on one project, switch tabs, reopen: the fast scan rendered, then the
+  slow one landed and drew the old project's branches under the new heading.
+  Each load now carries a ticket and only the newest may render.
+- **Renaming a tab now persists.** It used to write only into one browser's
+  in-memory session map — the tab state in localStorage keeps ids and nothing
+  else, so a reload dropped the rename, and it never reached `sessions.json`
+  (which has had a `name` field all along) or any other device. New
+  `PATCH /api/sessions/:sessionId {name}`, validated and written through.
+- **Repeated status scans no longer pile up.** `status=1` forks a git process per
+  repository; concurrent requests multiplied that across the shared
+  single-threaded server. Scans are now serialised, and a failing scan no longer
+  wedges the ones behind it.
+- Branch group colours no longer wrap past six, which had handed two different
+  branches the same colour — the exact misreading the colouring exists to prevent.
+- Removed a dead `checking` field, and documented that `resolveGitDir` follows
+  git's `gitdir:` pointer to an absolute path by design.
+
 ## [4.1.1] - 2026-09-02
 
 ### Fixed
