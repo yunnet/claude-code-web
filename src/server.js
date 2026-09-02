@@ -139,6 +139,29 @@ class ClaudeCodeWebServer {
     }
   }
 
+  // Express 4 does not catch a rejected promise from an `async` handler: it
+  // surfaces as an unhandledRejection, and Node 22 turns that into process
+  // exit — taking every live PTY with it. A single `?path=a&path=b` did
+  // exactly that, because a repeated query param arrives as an Array and
+  // path.resolve throws on it. Every async route goes through this wrapper, so
+  // a throw ends as a 500 the way it would in a sync handler.
+  static asyncRoute(handler) {
+    return (req, res, next) => {
+      Promise.resolve(handler(req, res, next)).catch((error) => {
+        console.error('[async route]', req.method, req.originalUrl, error);
+        if (!res.headersSent) res.status(500).json({ error: 'Internal error', message: error.message });
+      });
+    };
+  }
+
+  // A query param can arrive as a string, as undefined, or — when it is
+  // repeated — as an Array. Callers want the single-string case or nothing.
+  static singleQueryValue(value) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (typeof value === 'string') return { ok: true, value };
+    return { ok: false };
+  }
+
   validatePath(targetPath) {
     if (!targetPath) {
       return { valid: false, error: 'Path is required' };
@@ -323,7 +346,7 @@ class ClaudeCodeWebServer {
     });
     
     // Get session persistence info
-    this.app.get('/api/sessions/persistence', async (req, res) => {
+    this.app.get('/api/sessions/persistence', ClaudeCodeWebServer.asyncRoute(async (req, res) => {
       const metadata = await this.sessionStore.getSessionMetadata();
       res.json({
         ...metadata,
@@ -331,7 +354,7 @@ class ClaudeCodeWebServer {
         autoSaveEnabled: true,
         autoSaveInterval: 30000
       });
-    });
+    }));
 
     // List all Claude sessions
     this.app.get('/api/sessions/list', (req, res) => {
@@ -420,6 +443,31 @@ class ClaudeCodeWebServer {
         connectedClients: session.connections.size,
         lastActivity: session.lastActivity
       });
+    });
+
+    // Rename a session. Without this the new name lived only in the renaming
+    // browser's memory: the tab state in localStorage keeps ids and nothing
+    // else, so a reload dropped it, and it never reached sessions.json or any
+    // other device — even though the persisted session already has a name.
+    this.app.patch('/api/sessions/:sessionId', (req, res) => {
+      const session = this.claudeSessions.get(req.params.sessionId);
+      if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const raw = req.body && req.body.name;
+      if (typeof raw !== 'string') {
+        return res.status(400).json({ error: 'name must be a string' });
+      }
+      const name = raw.trim();
+      if (!name) {
+        return res.status(400).json({ error: 'name must not be empty' });
+      }
+      if (name.length > 200) {
+        return res.status(400).json({ error: 'name must be at most 200 characters' });
+      }
+      session.name = name;
+      this.saveSessionsToDisk();
+      res.json({ success: true, id: session.id, name: session.name });
     });
 
     // Delete a Claude session
@@ -603,7 +651,7 @@ class ClaudeCodeWebServer {
     // and NOT on a timer: it runs only when the panel is opened or refreshed.
     // `?status=1` adds the working-tree state, which costs a git process per
     // repo instead of a single file read, so it is opt-in per request.
-    this.app.get('/api/git/branches', (req, res) => this.listBranches(req, res));
+    this.app.get('/api/git/branches', ClaudeCodeWebServer.asyncRoute((req, res) => this.listBranches(req, res)));
 
     // Runtime-editable plan directories (additive to auto-discovery). Normal
     // header auth. GET returns the configured dirs plus active session roots (the
@@ -1367,12 +1415,30 @@ class ClaudeCodeWebServer {
   // read-only file explorer. Folders first, then files, each with size/mtime.
   // Scope matches the folder browser: any path the user's account can read (this
   // is a local, auth-protected, single-user tool).
+  // status=1 forks a git process per repo. Run the scans one after another so a
+  // client that hammers the endpoint queues up instead of multiplying the fork
+  // count across the shared single-threaded server. Concurrency *within* one
+  // scan is still bounded separately, in git-branches.js.
+  runStatusScan(repos) {
+    const start = () => gitBranches.attachStatus(repos);
+    const next = (this.branchStatusChain || Promise.resolve()).then(start, start);
+    this.branchStatusChain = next.catch(() => {});
+    return next;
+  }
+
   // GET /api/git/branches?path=<dir>[&status=1]
   // The default response is a pure file read (~13ms for 11 repos) so the panel
   // paints immediately. status=1 shells out to git once per repo and is only
   // requested when the user asks for it, because it measured ~18x slower.
   async listBranches(req, res) {
-    const requested = req.query.path || this.baseFolder;
+    // A repeated ?path= arrives as an Array. path.resolve throws on it, and in
+    // an async handler that throw used to end the process — so reject the shape
+    // up front rather than relying on the wrapper to catch it.
+    const raw = ClaudeCodeWebServer.singleQueryValue(req.query.path);
+    if (!raw.ok) {
+      return res.status(400).json({ error: 'path must be a single value' });
+    }
+    const requested = raw.value || this.baseFolder;
     const validation = this.validatePath(requested);
     if (!validation.valid) {
       return res.status(403).json({ error: validation.error, message: 'Access to this directory is not allowed' });
@@ -1380,7 +1446,7 @@ class ClaudeCodeWebServer {
     try {
       const result = gitBranches.scanBranches(validation.path);
       if (req.query.status === '1' || req.query.status === 'true') {
-        await gitBranches.attachStatus(result.repos);
+        await this.runStatusScan(result.repos);
         result.status = true;
       }
       // The absolute path of each repo is only needed server-side; the client
@@ -1389,6 +1455,9 @@ class ClaudeCodeWebServer {
         path: result.path,
         repos: result.repos.map(({ path: _p, ...rest }) => rest),
         truncated: result.truncated,
+        // Directories the entry cap stopped us looking at. The client shows
+        // this: a partial scan must never be presented as a complete one.
+        unexamined: result.unexamined,
         status: !!result.status,
         error: result.error
       });

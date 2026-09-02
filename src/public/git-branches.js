@@ -20,6 +20,9 @@
   // the theme, and the dark-theme greens and blues measure 2.5:1 on the light
   // theme's white — worse than the muted text they were meant to stand out
   // from. So this hands out a class and lets the stylesheet answer per theme.
+  // Past six shared branches the palette would wrap and hand two different
+  // branches the same colour — precisely the misreading the colouring exists to
+  // prevent. Groups beyond the sixth stay muted instead.
   const GROUP_COUNT = 6;
 
   class BranchPanel {
@@ -27,7 +30,11 @@
       this.bound = false;
       this.open = false;
       this.dir = null;
-      this.checking = false;
+      // Every load takes a ticket. A status scan runs ~18x longer than a plain
+      // one, so a "Check changes" on project A could still be in flight when
+      // the panel reopens on project B — and it would then repaint A's branches
+      // under B's heading. Only the newest ticket is allowed to render.
+      this.loadToken = 0;
     }
 
     el(id) { return document.getElementById(id); }
@@ -91,7 +98,6 @@
       title.title = dir || '';
 
       if (withStatus) {
-        this.checking = true;
         const btn = this.el('branchStatusBtn');
         btn.disabled = true;
         btn.textContent = 'Checking...';
@@ -99,6 +105,7 @@
         this.message('Loading...');
       }
 
+      const token = ++this.loadToken;
       try {
         const query = [];
         if (dir) query.push('path=' + encodeURIComponent(dir));
@@ -107,15 +114,15 @@
         const res = await fetch(url, { headers: window.authManager.getAuthHeaders() });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        if (token !== this.loadToken) return;   // a newer load already rendered
         if (!dir && data.path) {
           title.textContent = data.path.split('/').filter(Boolean).pop() || data.path;
           title.title = data.path;
         }
         this.render(data);
       } catch (error) {
-        this.message('Could not read branches: ' + error.message);
+        if (token === this.loadToken) this.message('Could not read branches: ' + error.message);
       } finally {
-        this.checking = false;
         const btn = this.el('branchStatusBtn');
         btn.disabled = false;
         btn.textContent = 'Check changes';
@@ -140,6 +147,7 @@
       if (!repos.length) {
         this.message(data.error === 'ENOENT' ? 'That directory no longer exists.'
                    : data.error ? 'Cannot read that directory.'
+                   : data.unexamined ? `No git repositories found, but ${data.unexamined} directories were not examined — this one is too large to scan in full.`
                    : 'No git repositories here.');
         return;
       }
@@ -150,8 +158,8 @@
       const group = new Map();
       let next = 0;
       for (const r of repos) {
-        if (counts.get(r.branch) > 1 && !group.has(r.branch)) {
-          group.set(r.branch, next++ % GROUP_COUNT);
+        if (counts.get(r.branch) > 1 && !group.has(r.branch) && next < GROUP_COUNT) {
+          group.set(r.branch, next++);
         }
       }
 
@@ -190,6 +198,9 @@
       const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
       let info = plural(repos.length, 'repo') + ' · ' + plural(counts.size, 'branch').replace('branchs', 'branches');
       if (data.truncated) info += ' · +' + data.truncated + ' not shown';
+      // A directory too large to scan in full is a PARTIAL answer, and a panel
+      // whose job is "every sub-project" must say so rather than look complete.
+      if (data.unexamined) info += ' · ' + data.unexamined + ' dirs not examined';
       this.el('branchFooterInfo').textContent = info;
     }
 

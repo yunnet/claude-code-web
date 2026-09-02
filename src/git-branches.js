@@ -19,7 +19,11 @@ const { execFile } = require('child_process');
 // Bounds the per-entry cost so a directory with thousands of children can't
 // stall the shared single-threaded server.
 const MAX_REPOS = 50;
-const MAX_ENTRIES = 500;
+// 2000 matches listDirectory's MAX_ITEMS, which already accepts one stat per
+// entry at this size — measured at 40ms for 2001 entries here. The old 500 was
+// low enough that an ordinary directory could push a real repository past it
+// and lose it without saying so.
+const MAX_ENTRIES = 2000;
 // A HEAD file is one short line. Reading a fixed prefix means a bogus (or
 // hostile) multi-gigabyte file at `.git/HEAD` costs the same as a real one.
 const HEAD_BYTES = 512;
@@ -59,7 +63,14 @@ function resolveGitDir(repoDir) {
   const text = readPrefix(dotGit, 4096);
   const m = text && text.match(/^gitdir:\s*(.+?)\s*$/m);
   if (!m) return null;
-  // The recorded path may be relative to the repo directory.
+  // The recorded path may be relative to the repo directory, and may also be
+  // absolute and point anywhere — that is git's own format, and following it is
+  // the only way a worktree or submodule resolves. A crafted `.git` file could
+  // therefore aim this at an arbitrary directory, and the caller would learn
+  // whether <that>/HEAD parses as a ref or a sha. That matches the scope the
+  // rest of this server already grants (isPathWithinBase allows any resolvable
+  // path — a local, single-user, auth-protected tool), and it requires the
+  // hostile file to already sit inside a directory the user is browsing.
   const target = path.resolve(repoDir, m[1]);
   try {
     return fs.statSync(target).isDirectory() ? target : null;
@@ -99,16 +110,25 @@ function scanBranches(dir) {
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (error) {
-    return { path: dir, repos, truncated: 0, error: error.code || 'EACCES' };
+    return { path: dir, repos, truncated: 0, unexamined: 0, error: error.code || 'EACCES' };
   }
 
   let scanned = 0;
   let truncated = 0;
+  let unexamined = 0;
   for (const entry of entries) {
     // `.git` itself, plus editor/tool dot-directories, are never sub-projects.
     if (entry.name.startsWith('.')) continue;
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    if (++scanned > MAX_ENTRIES) { truncated++; continue; }
+
+    // MAX_ENTRIES bounds the stat calls, and it used to silently eat real
+    // repositories: 600 plain directories ahead of one repo meant the repo was
+    // never examined and the caller was told "0 repos, 101 truncated" — a
+    // number that counted plain directories, which were never candidates. A
+    // panel whose whole job is "list every sub-project" must not lose one
+    // quietly, so the two counts are now kept apart: `truncated` is repos that
+    // were found and dropped, `unexamined` is directories never looked at.
+    if (++scanned > MAX_ENTRIES) { unexamined++; continue; }
 
     const child = path.join(dir, entry.name);
     const head = readHead(child);
@@ -118,7 +138,7 @@ function scanBranches(dir) {
   }
 
   repos.sort((a, b) => (a.name === '.' ? -1 : b.name === '.' ? 1 : a.name.localeCompare(b.name)));
-  return { path: dir, repos, truncated };
+  return { path: dir, repos, truncated, unexamined };
 }
 
 // `git status --porcelain -b` answers both questions in ONE process: the `## `
