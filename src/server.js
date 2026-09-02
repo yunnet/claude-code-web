@@ -9,6 +9,7 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const ClaudeBridge = require('./claude-bridge');
 const SessionStore = require('./utils/session-store');
+const gitBranches = require('./git-branches');
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -596,6 +597,13 @@ class ClaudeCodeWebServer {
     // auth (a regular fetch), so the ticket itself is the only thing the opened
     // page can read out of its own location — and it is dead on arrival.
     this.app.post('/api/fs/ticket', (req, res) => this.createFileTicket(req, res));
+
+    // Current branch of every git repository one level under a directory — the
+    // "many sub-projects in one big directory" layout. Read-only, header auth,
+    // and NOT on a timer: it runs only when the panel is opened or refreshed.
+    // `?status=1` adds the working-tree state, which costs a git process per
+    // repo instead of a single file read, so it is opt-in per request.
+    this.app.get('/api/git/branches', (req, res) => this.listBranches(req, res));
 
     // Runtime-editable plan directories (additive to auto-discovery). Normal
     // header auth. GET returns the configured dirs plus active session roots (the
@@ -1359,6 +1367,36 @@ class ClaudeCodeWebServer {
   // read-only file explorer. Folders first, then files, each with size/mtime.
   // Scope matches the folder browser: any path the user's account can read (this
   // is a local, auth-protected, single-user tool).
+  // GET /api/git/branches?path=<dir>[&status=1]
+  // The default response is a pure file read (~13ms for 11 repos) so the panel
+  // paints immediately. status=1 shells out to git once per repo and is only
+  // requested when the user asks for it, because it measured ~18x slower.
+  async listBranches(req, res) {
+    const requested = req.query.path || this.baseFolder;
+    const validation = this.validatePath(requested);
+    if (!validation.valid) {
+      return res.status(403).json({ error: validation.error, message: 'Access to this directory is not allowed' });
+    }
+    try {
+      const result = gitBranches.scanBranches(validation.path);
+      if (req.query.status === '1' || req.query.status === 'true') {
+        await gitBranches.attachStatus(result.repos);
+        result.status = true;
+      }
+      // The absolute path of each repo is only needed server-side; the client
+      // renders names, so don't hand the filesystem layout back to the browser.
+      res.json({
+        path: result.path,
+        repos: result.repos.map(({ path: _p, ...rest }) => rest),
+        truncated: result.truncated,
+        status: !!result.status,
+        error: result.error
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Cannot scan branches', message: error.message });
+    }
+  }
+
   listDirectory(req, res) {
     const MAX_ITEMS = 2000; // Bound the per-entry stat cost so a huge directory
                             // (node_modules, /nix/store) can't freeze the shared

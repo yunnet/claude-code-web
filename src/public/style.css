@@ -2418,3 +2418,205 @@ pre, code {
 
 
 /* Commands UI removed */
+
+/* ---------------------------------------------------------------------------
+   Branch panel (#branchBtn / #branchPanel)
+
+   Deliberately self-contained: every rule names #branchBtn or .branch-*, and
+   none of the existing toolbar selector lists is edited. Splicing a new
+   selector into a shared list is exactly how the folder icon was lost once
+   already — the anchor landed mid-list and orphaned #explorerBtn svg into a
+   display:none rule.
+   --------------------------------------------------------------------------- */
+
+.branch-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+/* Match the 44x44 touch target and 24px icon the other two toolbar buttons
+   use, without joining their rule. */
+#branchBtn {
+    width: 44px;
+    height: 44px;
+}
+#branchBtn svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* Like the file explorer, this is a desktop affordance. Same query, verbatim,
+   so "mobile" keeps meaning one thing across the app. The wrapper is hidden,
+   not just the button, so the panel can't be left open on a narrow screen. */
+@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
+       (max-width: 768px) {
+    .branch-wrapper {
+        display: none;
+    }
+}
+
+.branch-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    width: 340px;
+    max-width: 90vw;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    z-index: 10000;
+    overflow: hidden;
+}
+
+.branch-panel.active {
+    display: block;
+}
+
+.branch-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.branch-dir {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.branch-refresh {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.branch-refresh:hover {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.branch-list {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.branch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.branch-row:hover {
+    background-color: var(--bg-primary);
+}
+
+.branch-name {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.branch-meta {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 60%;
+}
+
+.branch-ref {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.branch-ref.detached {
+    color: #d29922;
+    font-style: italic;
+}
+
+.branch-badge {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.branch-dirty  { color: #d29922; }
+.branch-ahead  { color: #3fb950; }
+.branch-behind { color: #ff7b72; }
+
+.branch-empty {
+    padding: 16px 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.branch-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    border-top: 1px solid var(--border);
+}
+
+.branch-foot-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The expensive half of the panel, behind an explicit click: a git process per
+   repo instead of one file read. */
+.branch-status-btn {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    font-size: 12px;
+    background-color: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.branch-status-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.branch-status-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}

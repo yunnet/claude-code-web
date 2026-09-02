@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-09-02
+
+### Added
+- **Branch panel.** A new toolbar button next to the file explorer lists the
+  current git branch of every sub-project under the tab's working directory —
+  the "one big directory holding a dozen independent repos" layout, where the
+  question "did every repo move to the task branch?" comes up constantly and
+  the answer used to cost a shell command every time. Repos sharing a branch are
+  coloured alike, so the one still sitting on `dev` stands out.
+  - Branch names are read straight out of `.git/HEAD`, no `git` process at all:
+    11 repos in ~13ms. Worktrees and submodules (whose `.git` is a *file*
+    holding `gitdir:`) and detached HEADs are handled.
+  - Working-tree state (uncommitted count, ahead/behind) costs a `git` process
+    per repo — ~18x more — so it sits behind an explicit **Check changes**
+    button and runs with bounded concurrency. Nothing polls on a timer.
+  - New read-only endpoint `GET /api/git/branches?path=<dir>[&status=1]`, behind
+    the same header auth and the same path policy as `/api/fs/list`.
+  - Desktop only, hidden on mobile by the same media query as the file explorer.
+
 ## [4.0.0] - 2026-08-31
 
 ### Removed (breaking)
