@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-09-02
+
+### Fixed
+- **The start overlay no longer swallows the whole tab bar.** `#overlay`
+  (`.terminal-overlay`) is fixed, covers the full viewport, and sits at
+  `z-index: 5000`; the tab bar sat below it. So any time a session was idle and
+  the "Start Claude" prompt was up, every tab-bar control was dead: switching
+  tabs, double-click rename, new tab, close tab, and all three toolbar buttons.
+  `document.elementFromPoint` on the tab name returned `DIV#overlay`. The tab bar
+  is app chrome and has nothing to do with what the overlay is gating, so it is
+  now lifted above the overlay while the overlay is open.
+  - The lift is scoped to `body.overlay-open`. Raising the tab bar
+    unconditionally would invert two other stacks — the mobile side menu (3000)
+    and the centered folder browser (2000) would fall behind it — so inside the
+    scope those two come along above the bar, and outside it the normal stacking
+    order is untouched.
+  - This also completes a half-finished fix: `#fileExplorerModal` had already
+    been lifted to 6000 "so it stays usable before a session is started", but the
+    button that opens it was left under the overlay. The drawer was usable and
+    unreachable.
+- **Renaming a tab no longer throws.** `saveNewName` was bound to both `blur` and
+  `keydown`, and replacing the focused input took it out of the DOM, which fired
+  `blur`, which ran `replaceWith` again on a node that was no longer there —
+  `NotFoundError`, once per rename. It now commits exactly once. Pre-existing;
+  the overlay had been blocking the path that reaches it.
+
 ## [4.1.0] - 2026-09-02
 
 ### Added

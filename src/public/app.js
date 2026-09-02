@@ -1583,6 +1583,12 @@ class ClaudeCodeWebInterface {
         });
         
         overlay.style.display = 'flex';
+        // The overlay covers the whole viewport at z-index 5000, which would
+        // otherwise swallow every click on the tab bar. This flag is what lets
+        // the stylesheet lift the chrome above it — see the tab-bar/overlay
+        // block in style.css. These two methods are the only places the
+        // overlay's display is written, so the flag can't drift out of sync.
+        document.body.classList.add('overlay-open');
     }
 
     hideOverlay() {
@@ -1594,6 +1600,7 @@ class ClaudeCodeWebInterface {
         } else {
             console.error('[hideOverlay] Overlay element not found!');
         }
+        document.body.classList.remove('overlay-open');
     }
 
     showError(message) {

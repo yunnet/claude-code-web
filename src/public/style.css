@@ -2638,3 +2638,28 @@ pre, code {
     opacity: 0.6;
     cursor: default;
 }
+
+/* ---------------------------------------------------------------------------
+   Tab bar vs. the start/connect overlay
+
+   #overlay (.terminal-overlay) is fixed, covers the whole viewport, and sits at
+   z-index 5000; the tab bar sits at 2. So whenever a session is idle and the
+   "Start Claude" prompt is up, the overlay swallows every click on the tab bar:
+   switching tabs, double-click rename, new tab, close, and all three toolbar
+   buttons. None of those are what the overlay is there to gate — they are app
+   chrome, and they should stay live while a session is stopped.
+
+   #fileExplorerModal was already lifted to 6000 for exactly this reason ("so it
+   stays usable before a session is started"), but the button that opens it was
+   left underneath the overlay — the drawer was usable and unreachable.
+
+   Scoped to body.overlay-open on purpose. Lifting the tab bar unconditionally
+   would invert two other stacks: the mobile side menu (3000) and the centered
+   folder browser (2000) would both fall behind it. Inside the scope those two
+   are re-lifted above the bar; outside it, the normal stacking order is
+   untouched. #fileExplorerModal keeps 6000 — an id selector (1,0,0) outranks
+   `body.overlay-open .folder-browser-modal` (0,2,1) — so the drawer stays on top.
+   --------------------------------------------------------------------------- */
+body.overlay-open .session-tabs-bar     { z-index: 5001; }
+body.overlay-open .mobile-menu          { z-index: 5002; }
+body.overlay-open .folder-browser-modal { z-index: 5003; }

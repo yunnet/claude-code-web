@@ -917,7 +917,14 @@ class SessionTabManager {
         input.focus();
         input.select();
         
+        // Reached twice for a single rename: replacing a focused input takes it
+        // out of the DOM, the browser fires blur, and the second run calls
+        // replaceWith on a node that is no longer there — NotFoundError, once
+        // per rename. Commit exactly once.
+        let saved = false;
         const saveNewName = () => {
+            if (saved) return;
+            saved = true;
             const newName = input.value.trim() || currentName;
             const newNameSpan = document.createElement('span');
             newNameSpan.className = 'tab-name';
