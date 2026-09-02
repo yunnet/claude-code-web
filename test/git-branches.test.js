@@ -244,3 +244,37 @@ describe('server route: listBranches', function () {
     assert.strictEqual(res.body.repos[0].dirty, 0);
   });
 });
+
+describe('branch panel styling', function () {
+  const CSS = fs.readFileSync(path.join(__dirname, '..', 'src', 'public', 'style.css'), 'utf8');
+  const JS = fs.readFileSync(path.join(__dirname, '..', 'src', 'public', 'git-branches.js'), 'utf8');
+
+  it('defines every group colour for BOTH themes', function () {
+    // The first cut used GitHub's dark palette for both, and those greens and
+    // blues measured 2.5:1 on the light theme's white — the panel's most
+    // important text was its least readable. A group with no light-theme
+    // override silently reintroduces that.
+    const groups = Number((JS.match(/const GROUP_COUNT = (\d+)/) || [])[1]);
+    assert.ok(groups > 0, 'GROUP_COUNT is declared in the panel script');
+    for (let i = 0; i < groups; i++) {
+      assert.ok(new RegExp(`\\.branch-g${i}\\b`).test(CSS), `.branch-g${i} has a dark-theme colour`);
+      assert.ok(
+        new RegExp(`\\[data-theme="light"\\][^{]*\\.branch-g${i}\\b`).test(CSS),
+        `.branch-g${i} has a light-theme colour`
+      );
+    }
+  });
+
+  it('lets CSS own the colour, so it can follow the theme', function () {
+    assert.ok(!/\.style\.color\s*=/.test(JS), 'no inline colour: an inline style cannot be themed');
+  });
+
+  it('hides the panel on mobile with the same query as the file explorer', function () {
+    // "Mobile" must mean one thing across the app; two drifting definitions is
+    // how a button ends up visible on a phone and missing on a laptop.
+    const query = '@media (max-width: 1024px) and (hover: none) and (pointer: coarse),\n       (max-width: 768px)';
+    const blocks = CSS.split(query).length - 1;
+    assert.ok(blocks >= 2, 'the branch panel reuses the explorer\'s mobile query verbatim');
+    assert.ok(/\.branch-wrapper\s*\{\s*display:\s*none/.test(CSS), 'the wrapper is hidden, not just the button');
+  });
+});

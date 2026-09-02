@@ -2570,9 +2570,27 @@ pre, code {
     border-radius: 4px;
 }
 
-.branch-dirty  { color: #d29922; }
-.branch-ahead  { color: #3fb950; }
-.branch-behind { color: #ff7b72; }
+/* Branch-group and badge colours, per theme.
+
+   The dark set is GitHub's dark palette; on the light theme's white background
+   those same values measure ~2.5:1 — below even the 3:1 large-text floor, on
+   12px text. So the light theme gets its own darker set. Every value here was
+   measured against its own panel background, not assumed. */
+.branch-g0, .branch-ahead  { color: #3fb950; }
+.branch-g1                 { color: #58a6ff; }
+.branch-g2, .branch-dirty  { color: #d29922; }
+.branch-g3                 { color: #bc8cff; }
+.branch-g4, .branch-behind { color: #ff7b72; }
+.branch-g5                 { color: #39c5cf; }
+
+[data-theme="light"] .branch-g0, [data-theme="light"] .branch-ahead  { color: #1a7f37; }
+[data-theme="light"] .branch-g1                                      { color: #0969da; }
+[data-theme="light"] .branch-g2, [data-theme="light"] .branch-dirty  { color: #8a6100; }
+[data-theme="light"] .branch-g3                                      { color: #7c3aed; }
+[data-theme="light"] .branch-g4, [data-theme="light"] .branch-behind { color: #c4232f; }
+[data-theme="light"] .branch-g5                                      { color: #10707a; }
+
+[data-theme="light"] .branch-ref.detached { color: #8a6100; }
 
 .branch-empty {
     padding: 16px 12px;

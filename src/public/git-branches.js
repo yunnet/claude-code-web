@@ -15,7 +15,12 @@
   // Repos sharing a branch get the same accent, so "who moved to the task
   // branch and who didn't" is one glance instead of string comparison. A branch
   // only one repo is on gets no colour — there is nothing to compare it to.
-  const GROUP_COLORS = ['#3fb950', '#58a6ff', '#d29922', '#bc8cff', '#ff7b72', '#39c5cf'];
+  //
+  // JS picks the GROUP, CSS picks the COLOUR. An inline style here cannot follow
+  // the theme, and the dark-theme greens and blues measure 2.5:1 on the light
+  // theme's white — worse than the muted text they were meant to stand out
+  // from. So this hands out a class and lets the stylesheet answer per theme.
+  const GROUP_COUNT = 6;
 
   class BranchPanel {
     constructor() {
@@ -78,14 +83,12 @@
       const title = this.el('branchDir');
       if (!list) return;
 
-      if (!dir) {
-        title.textContent = '';
-        this.message('No working directory for this tab yet.');
-        return;
-      }
+      // With no session yet, hand the server no path and let it answer for its
+      // own base folder — the same fallback the file explorer takes, so the two
+      // never disagree about where "here" is.
       this.dir = dir;
-      title.textContent = dir.split('/').filter(Boolean).pop() || dir;
-      title.title = dir;
+      title.textContent = dir ? (dir.split('/').filter(Boolean).pop() || dir) : '';
+      title.title = dir || '';
 
       if (withStatus) {
         this.checking = true;
@@ -97,10 +100,17 @@
       }
 
       try {
-        const url = '/api/git/branches?path=' + encodeURIComponent(dir) + (withStatus ? '&status=1' : '');
+        const query = [];
+        if (dir) query.push('path=' + encodeURIComponent(dir));
+        if (withStatus) query.push('status=1');
+        const url = '/api/git/branches' + (query.length ? '?' + query.join('&') : '');
         const res = await fetch(url, { headers: window.authManager.getAuthHeaders() });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        if (!dir && data.path) {
+          title.textContent = data.path.split('/').filter(Boolean).pop() || data.path;
+          title.title = data.path;
+        }
         this.render(data);
       } catch (error) {
         this.message('Could not read branches: ' + error.message);
@@ -137,11 +147,11 @@
       // Colour only branches that more than one repo shares.
       const counts = new Map();
       for (const r of repos) counts.set(r.branch, (counts.get(r.branch) || 0) + 1);
-      const color = new Map();
+      const group = new Map();
       let next = 0;
       for (const r of repos) {
-        if (counts.get(r.branch) > 1 && !color.has(r.branch)) {
-          color.set(r.branch, GROUP_COLORS[next++ % GROUP_COLORS.length]);
+        if (counts.get(r.branch) > 1 && !group.has(r.branch)) {
+          group.set(r.branch, next++ % GROUP_COUNT);
         }
       }
 
@@ -168,8 +178,8 @@
         branch.className = 'branch-ref' + (repo.detached ? ' detached' : '');
         branch.textContent = repo.detached ? 'detached @ ' + repo.branch : repo.branch;
         branch.title = branch.textContent;
-        const c = color.get(repo.branch);
-        if (c && !repo.detached) branch.style.color = c;
+        const g = group.get(repo.branch);
+        if (g !== undefined && !repo.detached) branch.classList.add('branch-g' + g);
         meta.appendChild(branch);
 
         row.appendChild(meta);
