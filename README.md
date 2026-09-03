@@ -78,7 +78,16 @@ npx claude-code-web --no-open
 npx claude-code-web
 # Output will show: "Generated random authentication token: Xr9kM2nQ7w"
 
-# Use a custom authentication token
+# Use a custom authentication token — from a file (preferred)
+echo "your-secret-token" > ~/.ccweb-token && chmod 600 ~/.ccweb-token
+npx claude-code-web --auth-file ~/.ccweb-token
+
+# …or from the environment
+CCWEB_AUTH=your-secret-token npx claude-code-web
+
+# …or on the command line. This still works, but on a machine with other
+# users it is the weakest of the three: /proc/<pid>/cmdline is world-readable,
+# so anyone who can log in can read the token out of the running process.
 npx claude-code-web --auth your-secret-token
 
 # Disable authentication entirely (NOT recommended for production)
@@ -86,6 +95,37 @@ npx claude-code-web --disable-auth
 
 # Access with token in URL: http://localhost:32352/?token=your-token
 ```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `CCWEB_AUTH` | Authentication token. Beats `--auth`, loses to `--auth-file`. `/proc/<pid>/environ` is readable only by the owner, unlike `cmdline`. |
+| `CCW_DATA_DIR` | Where sessions, plan dirs and the instance registry live. Defaults to `~/.claude-code-web`. Point a second instance at another directory to isolate it. |
+
+### Instance registry
+
+Each running server writes `<data dir>/instances/<port>.lock` — the filename is the
+port, so listing the directory tells you what is running without opening anything:
+
+```json
+{
+  "port": 32353,
+  "pid": 12345,
+  "sourceDir": "/path/to/checkout",
+  "dataDir": "/home/you/.claude-code-web-dev",
+  "version": "4.3.0",
+  "buildId": "f3b4ceee",
+  "https": false,
+  "startedAt": "2026-09-03T...",
+  "authToken": "..."
+}
+```
+
+The file is created `0600` inside a `0700` directory, because it holds the token.
+It is removed on a clean shutdown, and a record left behind by `kill -9` is pruned
+by the next instance to start. Writing it is best-effort: if it fails the server
+still starts, it just says so.
 
 ### HTTPS Support
 ```bash
@@ -163,7 +203,8 @@ node bin/cc-web.js --auth YOUR_TOKEN
 |--------|-------------|---------|
 | `-p, --port <number>` | Server port | 32352 |
 | `--no-open` | Don't automatically open browser | false |
-| `--auth <token>` | Custom authentication token | auto-generated |
+| `--auth-file <path>` | Read the token from a file (first line) — keeps it out of the process image | none |
+| `--auth <token>` | Custom authentication token — **visible to other users via `/proc`** | auto-generated |
 | `--disable-auth` | Disable authentication (not recommended) | false |
 | `--https` | Enable HTTPS | false |
 | `--cert <path>` | SSL certificate file path | none |

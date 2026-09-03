@@ -9,6 +9,7 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const ClaudeBridge = require('./claude-bridge');
 const SessionStore = require('./utils/session-store');
+const instanceLock = require('./instance-lock');
 const gitBranches = require('./git-branches');
 
 class ClaudeCodeWebServer {
@@ -99,6 +100,42 @@ class ClaudeCodeWebServer {
     if (this._onSigterm) process.removeListener('SIGTERM', this._onSigterm);
     if (this._onBeforeExit) process.removeListener('beforeExit', this._onBeforeExit);
     this._onSigint = this._onSigterm = this._onBeforeExit = null;
+    this.retractInstanceLock();
+  }
+
+  // Announce this instance in <dataDir>/instances/<port>.lock: which source tree
+  // it runs from, which data dir it owns, and the auth token. Before this, the
+  // only way to answer "which port is which checkout" was reading /proc, and the
+  // token lived in argv where any user on the box could read it.
+  //
+  // Deliberately best-effort. The registry is a convenience; a server that
+  // refused to run because it could not write a note about itself would be a
+  // worse trade than no registry at all.
+  publishInstanceLock() {
+    try {
+      const pruned = instanceLock.pruneStaleLocks();
+      if (pruned.length && this.dev) {
+        console.log(`Pruned stale instance locks: ${pruned.join(', ')}`);
+      }
+      const written = instanceLock.writeLock({
+        port: this.port,
+        sourceDir: path.resolve(__dirname, '..'),
+        version: require('../package.json').version,
+        buildId: this.buildId,
+        https: !!this.useHttps,
+        authToken: this.noAuth ? null : this.auth,
+      });
+      this.instanceLockPath = written;
+      if (!written) console.warn('Could not write the instance lock (continuing without it)');
+    } catch (error) {
+      console.warn('Could not write the instance lock:', error.message);
+    }
+  }
+
+  retractInstanceLock() {
+    if (!this.instanceLockPath) return;
+    try { instanceLock.removeLock(this.port); } catch (_) { /* best effort */ }
+    this.instanceLockPath = null;
   }
   
   async saveSessionsToDisk() {
@@ -115,6 +152,7 @@ class ClaudeCodeWebServer {
     this.isShuttingDown = true;
 
     console.log('\nGracefully shutting down...');
+    this.retractInstanceLock();
     await this.saveSessionsToDisk();
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
@@ -793,6 +831,10 @@ class ClaudeCodeWebServer {
           reject(err);
         } else {
           this.server = server;
+          // Only now: a lock written before listen succeeds would advertise a
+          // port this process never got, and the next instance would find a
+          // record pointing at nothing.
+          this.publishInstanceLock();
           resolve(server);
         }
       });
