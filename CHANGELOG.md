@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-09-03
+
+### Changed
+- **node-pty 1.0.0 → 1.1.0.** Not for speed — for two rotting foundations.
+  1.0.0 bound the V8 C++ ABI through `nan`, so every Node major needed the
+  native module recompiled, and its read path went through
+  `process.binding('pipe_wrap')`, an internal API Node has been deprecating and
+  removing for years. 1.1.0 builds on `node-addon-api` (N-API), a stable ABI:
+  the compiled `pty.node` went from **30 V8 symbols and 0 N-API symbols** to
+  **0 and 40**, and `process.binding` is gone from `unixTerminal.js`.
+
+  The public API did not move: only `useConptyDll` (Windows) was added and
+  `write()` widened from `string` to `string | Buffer`. **`claude-bridge.js` is
+  unchanged — not one line.**
+
+  1.1.0 does rewrite the plumbing underneath, though: the read side moved from a
+  `net.Socket` (`PipeSocket`) to a `tty.ReadStream`, and the write side to its
+  own queued stream. Since this app drives `pause()`/`resume()` for WebSocket
+  flow control, that path was verified specifically, on both versions.
+
+### Added
+- `test/pty-contract.test.js` — locks the terminal-byte-passthrough invariant
+  against the library itself. A version bump can rewrite the plumbing under a
+  stable-looking API, and only behaviour tests catch that. Covers every API
+  `claude-bridge.js` uses (including `on('error')`, which is absent from the
+  published typings but relied on here), 5000-line byte fidelity checked
+  line-by-line for loss and reordering, resize reaching the child, the
+  `pause()`/`resume()` contract, `onExit` after `kill()`, no surviving child,
+  and a guard that the build never silently falls back to NAN.
+
 ## [4.2.0] - 2026-09-03
 
 ### Changed
