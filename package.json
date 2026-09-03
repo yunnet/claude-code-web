@@ -1,6 +1,6 @@
 {
   "name": "claude-code-web",
-  "version": "4.2.1",
+  "version": "4.3.0",
   "description": "Web-based interface for Claude Code CLI accessible via browser",
   "main": "src/server.js",
   "bin": {

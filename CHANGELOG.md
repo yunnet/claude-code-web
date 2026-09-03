@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-09-03
+
+Borrowed from how Claude Code's CLI and its editor extension find each other.
+
+### Added
+- **Instance registry.** Each server writes `<data dir>/instances/<port>.lock`,
+  with the port as the filename so listing the directory *is* the discovery step.
+  The record carries what previously took `/proc/<pid>/cwd`, `/proc/<pid>/environ`
+  and `/proc/<pid>/maps` to reconstruct: which checkout the instance runs from,
+  which data dir it owns, its version and build id. Removed on clean shutdown;
+  a record orphaned by `kill -9` is pruned by the next instance to start.
+  Writing it is best-effort — a registry that could refuse to start the server
+  would be a worse trade than no registry.
+- **`--auth-file <path>` and `CCWEB_AUTH`** as token sources, in that order of
+  preference ahead of `--auth`.
+
+### Security
+- **The auth token no longer has to travel in argv.** `--auth <token>` lands in
+  `/proc/<pid>/cmdline`, which is mode 444 — world-readable — and this is not
+  hypothetical on any box with a second account. Measured on the three sources:
+
+  | source | in `cmdline` (444) | in `environ` (600) |
+  |---|---|---|
+  | `--auth` | yes | no |
+  | `CCWEB_AUTH` | no | yes |
+  | `--auth-file` | no | no |
+
+  `--auth` still works so no start script breaks; it now prints a note saying
+  what it exposes. The lock file that holds the token is created `0600` inside a
+  `0700` directory, from the moment it exists rather than by a later `chmod`.
+
+  Default behaviour is unchanged and deliberately so: auth is still on, and
+  giving no token still generates one.
+
+### Fixed
+- `cc-web --version` reported `3.4.0` regardless of the actual version. It now
+  reads `package.json`.
+
 ## [4.2.1] - 2026-09-03
 
 ### Changed

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
+const fs = require('fs');
 const path = require('path');
 const open = require('open');
 const crypto = require('crypto');
@@ -11,10 +12,11 @@ const program = new Command();
 program
   .name('cc-web')
   .description('Web-based interface for Claude Code CLI')
-  .version('3.4.0')
+  .version(require('../package.json').version)
   .option('-p, --port <number>', 'port to run the server on', '32352')
   .option('--no-open', 'do not automatically open browser')
-  .option('--auth <token>', 'authentication token for secure access')
+  .option('--auth <token>', 'authentication token (visible to other users via /proc — prefer --auth-file)')
+  .option('--auth-file <path>', 'read the authentication token from a file (first line)')
   .option('--disable-auth', 'disable authentication (not recommended for production)')
   .option('--https', 'enable HTTPS (requires cert files)')
   .option('--cert <path>', 'path to SSL certificate file')
@@ -51,11 +53,39 @@ async function main() {
     let noAuth = options.disableAuth === true;
     
     if (!noAuth) {
-      if (options.auth) {
-        // Use provided token
+      // Where the token comes from, in order of how well it hides.
+      //
+      // `--auth` lands in /proc/<pid>/cmdline, which is mode 444 — readable by
+      // every user on the machine. That is the reason the other two exist. It
+      // still works, so nobody's start script breaks; it just says so.
+      //
+      // The env var is a real improvement rather than a cosmetic one:
+      // /proc/<pid>/environ is mode 600, so it closes the cross-user read.
+      // A file goes one further and keeps the token out of the process image
+      // entirely.
+      if (options.authFile) {
+        try {
+          const raw = fs.readFileSync(options.authFile, 'utf8');
+          authToken = raw.split('\n')[0].trim();
+        } catch (error) {
+          console.error(`Error: cannot read --auth-file ${options.authFile}: ${error.message}`);
+          process.exit(1);
+        }
+        if (!authToken) {
+          console.error(`Error: --auth-file ${options.authFile} is empty`);
+          process.exit(1);
+        }
+      } else if (process.env.CCWEB_AUTH) {
+        authToken = process.env.CCWEB_AUTH;
+      } else if (options.auth) {
         authToken = options.auth;
+        console.warn(
+          'Note: --auth puts the token in /proc/<pid>/cmdline, which other users on this\n' +
+          '      machine can read. Use --auth-file or CCWEB_AUTH to avoid that.',
+        );
       } else {
-        // Generate random token
+        // Unchanged: no token given still means one is generated, and auth
+        // stays on. This default is load-bearing — do not "improve" it.
         authToken = generateRandomToken();
       }
     }
