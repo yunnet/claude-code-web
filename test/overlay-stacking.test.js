@@ -43,13 +43,32 @@ describe('overlay stacking', function () {
     assert.ok(browser > bar, `folder browser (${browser}) must stay above the tab bar (${bar})`);
   });
 
+  it('lifts every modal that can open while the overlay is up', function () {
+    // The overlay is what a user sees whenever a session's Claude isn't running.
+    // From that state the tab bar's + and the mobile menu both still work (they
+    // were lifted above it), and each of them ends in a modal. A modal left at
+    // its ordinary z-index opens UNDER the overlay — a ghost outline you cannot
+    // tap — which is exactly how "create a session in ts" failed on a phone:
+    // every tap landed on .overlay-content and the server never saw a single
+    // POST /api/sessions/create. Lifting the paths that REACH a modal without
+    // lifting the modal itself is half a fix.
+    const bar = zIndexOf('body.overlay-open .session-tabs-bar');
+    for (const rule of ['.session-modal', '.settings-modal']) {
+      const z = zIndexOf(`body.overlay-open ${rule}`);
+      assert.ok(z !== null, `${rule} must be lifted under body.overlay-open`);
+      assert.ok(z > OVERLAY_Z, `${rule} (${z}) must clear the overlay (${OVERLAY_Z})`);
+      assert.ok(z > bar, `${rule} (${z}) must sit above the lifted tab bar (${bar})`);
+    }
+  });
+
   it('keeps the lift scoped, so normal stacking is untouched', function () {
     // The unscoped rules must NOT have grown a z-index of their own: outside
     // the overlay state, the mobile menu and folder browser still have to sit
     // above a tab bar that is back down at its ordinary level.
     assert.ok(zIndexOf('.session-tabs-bar') === null || zIndexOf('.session-tabs-bar') < zIndexOf('.mobile-menu'),
       'unscoped tab bar stays below the mobile menu');
-    for (const rule of ['.session-tabs-bar', '.mobile-menu', '.folder-browser-modal']) {
+    for (const rule of ['.session-tabs-bar', '.mobile-menu', '.folder-browser-modal',
+                        '.session-modal', '.settings-modal']) {
       assert.ok(new RegExp(`body\\.overlay-open ${rule.replace('.', '\\.')}\\s*\\{`).test(CSS),
         `${rule} is lifted only under body.overlay-open`);
     }

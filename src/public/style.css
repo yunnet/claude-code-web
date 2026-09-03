@@ -2663,3 +2663,15 @@ pre, code {
 body.overlay-open .session-tabs-bar     { z-index: 5001; }
 body.overlay-open .mobile-menu          { z-index: 5002; }
 body.overlay-open .folder-browser-modal { z-index: 5003; }
+/* Lifting the two entry points without lifting what they OPEN was half a fix.
+   Both roads out of the overlay end in a modal: the tab bar's + and the mobile
+   menu's "New Session" reach the folder browser, and picking a directory closes
+   it and opens #newSessionModal (.session-modal, 2000) — under the overlay, a
+   ghost outline behind a 95%-opaque scrim. On a phone that read as "creating a
+   session does nothing", and it was: every tap landed on .overlay-content and
+   the server never saw a POST /api/sessions/create. The mobile menu's Settings
+   (.settings-modal, 1000) was dead the same way.
+   Above the folder browser (5003) because .session-modal is what replaces it,
+   and still below #fileExplorerModal (6000) and .plan-modal (10001). */
+body.overlay-open .session-modal        { z-index: 5004; }
+body.overlay-open .settings-modal       { z-index: 5004; }

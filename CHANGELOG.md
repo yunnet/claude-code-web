@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [4.1.3] - 2026-09-03
+
+### Fixed
+- **Creating a session did nothing while the "Start Claude" overlay was up.**
+  On a phone: log in, tap `+`, pick a directory — and the screen just sat there
+  showing the overlay. Every retry behaved the same, and the server never
+  received a single `POST /api/sessions/create`. `#newSessionModal`
+  (`.session-modal`) is z-index 2000 and the overlay is 5000, so the Create New
+  Session dialog opened *underneath* it: a ghost outline behind a 95%-opaque
+  scrim, with every tap landing on `.overlay-content`. Both modals that the
+  overlay state can reach are now lifted above it (5004).
+  - This was the leftover half of the 4.1.1 fix. That release lifted the two
+    paths that *reach* a modal — the tab bar (5001) and the mobile menu (5002),
+    plus the folder browser (5003) — but not the modal each path ends in. The
+    defect only became reachable once 4.1.1 made the `+` clickable again; before
+    that, the overlay swallowed the tab bar and nobody got this far.
+  - `.settings-modal` (z-index 1000) was dead the same way: reachable from the
+    lifted mobile menu, opening under the overlay. Lifted too.
+  - `overlay-stacking.test.js` asserted the stacking contract for the tab bar,
+    the mobile menu and the folder browser, and passed the whole time — it never
+    named the modals. It does now, for both.
+
 ## [4.1.2] - 2026-09-02
 
 Review of 4.1.0-4.1.1. Nine findings, all fixed.
