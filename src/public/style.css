@@ -367,16 +367,12 @@ body {
     width: 44px;
     height: 44px;
 }
-/* The file explorer is a desktop affordance: hidden on mobile. Same definition
-   of "mobile" the floating ESC/MODE buttons use, so the term means one thing
-   across the app — note that covers a touch tablet up to 1024px, not just a
-   phone. */
-@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
-       (max-width: 768px) {
-    #explorerBtn {
-        display: none;
-    }
-}
+/* The file explorer used to be desktop-only, hidden behind the same "mobile"
+   query the floating ESC/MODE buttons use. Browsing the project's files is just
+   as useful from a phone — more so, since there is no second window to put an
+   editor in — so it now shows everywhere. Only the split-layout button stays
+   off a narrow screen, and that one is decided in JS by whether two panes
+   actually fit (syncSplitAvailability), not by a width guess in CSS. */
 
 #explorerBtn svg,
 #layoutBtn svg {
@@ -2446,15 +2442,10 @@ pre, code {
     height: 24px;
 }
 
-/* Like the file explorer, this is a desktop affordance. Same query, verbatim,
-   so "mobile" keeps meaning one thing across the app. The wrapper is hidden,
-   not just the button, so the panel can't be left open on a narrow screen. */
-@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
-       (max-width: 768px) {
-    .branch-wrapper {
-        display: none;
-    }
-}
+/* Shown on every width, like the file explorer. "Did every repo move to the
+   task branch?" is a question you ask more often away from the desk, not less.
+   The panel is right-anchored and capped at 90vw (see .branch-panel below), so
+   it stays inside a 390px viewport instead of running off the edge. */
 
 .branch-panel {
     display: none;
@@ -2470,6 +2461,20 @@ pre, code {
     z-index: 10000;
     overflow: hidden;
 }
+
+/* The panel is 340px and right-anchored to its 44px button, so on a 390px
+   phone its left edge landed at -10px — off the screen. The tab bar is already
+   position:relative with overflow:visible, so dropping the wrapper's own
+   positioning re-anchors the panel to the BAR instead of the button: same top
+   (bar and button are the same height, so `100%` is unchanged), but now
+   right-aligned to the bar's padding edge, which puts all 340px back on
+   screen. Scoped narrow — at 768px the button already has room to its left and
+   the button-anchored panel is the better alignment. */
+@media (max-width: 480px) {
+    .branch-wrapper { position: static; }
+    .branch-panel   { right: 10px; }
+}
+
 
 .branch-panel.active {
     display: block;

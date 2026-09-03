@@ -296,12 +296,28 @@ describe('branch panel styling', function () {
     assert.ok(!/\.style\.color\s*=/.test(JS), 'no inline colour: an inline style cannot be themed');
   });
 
-  it('hides the panel on mobile with the same query as the file explorer', function () {
-    // "Mobile" must mean one thing across the app; two drifting definitions is
-    // how a button ends up visible on a phone and missing on a laptop.
-    const query = '@media (max-width: 1024px) and (hover: none) and (pointer: coarse),\n       (max-width: 768px)';
-    const blocks = CSS.split(query).length - 1;
-    assert.ok(blocks >= 2, 'the branch panel reuses the explorer\'s mobile query verbatim');
-    assert.ok(/\.branch-wrapper\s*\{\s*display:\s*none/.test(CSS), 'the wrapper is hidden, not just the button');
+  it('stays reachable on a phone, and capped so it fits one', function () {
+    // It used to be desktop-only, hidden by the same query the file explorer
+    // used. "Did every repo move to the task branch?" gets asked more often
+    // away from the desk, not less — so the wrapper is no longer hidden at any
+    // width. What made that safe to do is the cap below: the panel is
+    // right-anchored at 340px but never wider than 90vw, so it stays inside a
+    // 390px viewport instead of running off the edge.
+    assert.ok(!/\.branch-wrapper\s*\{[^}]*display:\s*none/.test(CSS),
+      'the branch button is not hidden on narrow screens');
+    assert.ok(/\.branch-panel\b[^}]*max-width:\s*90vw/.test(CSS),
+      'the panel is capped to the viewport, which is what lets it show on a phone');
+    assert.ok(!/#explorerBtn\s*\{\s*display:\s*none/.test(CSS),
+      'the file explorer button it used to share that query with is shown too');
+
+    // 340px right-anchored to a 44px button puts the left edge at -10px on a
+    // 390px phone. Below 480px the wrapper drops its own positioning so the
+    // panel anchors to the tab bar instead — which only works because the bar
+    // is the positioning context, so assert that too rather than leave it to
+    // luck.
+    assert.ok(/@media \(max-width: 480px\)\s*\{\s*\.branch-wrapper\s*\{\s*position:\s*static/.test(CSS),
+      'narrow screens re-anchor the panel to the tab bar');
+    assert.ok(/\.session-tabs-bar\s*\{[^}]*position:\s*relative/.test(CSS),
+      'the tab bar is the positioning context that re-anchoring falls back to');
   });
 });
