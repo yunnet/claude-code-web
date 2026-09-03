@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-09-03
+
+### Changed
+- **The branch panel and the file explorer now show on a phone.** Both were
+  desktop-only, hidden behind the same media query (which also covered touch
+  tablets up to 1024px, not just phones). Neither restriction earned its keep:
+  "did every repo move to the task branch?" gets asked more often away from the
+  desk, and browsing the project's files matters more on a phone, where there is
+  no second window to put an editor in. The toolbar on a 390px screen is now
+  hamburger / tabs / `+` / branches / files, with no horizontal overflow and the
+  tab still clickable.
+  - The split-layout button stays hidden on a narrow screen, unchanged. That one
+    was never a width guess in CSS — `syncSplitAvailability()` hides it when two
+    panes genuinely don't fit.
+  - Showing the branch panel exposed a latent overflow: it is 340px wide and
+    right-anchored to its own 44px button, which put its left edge at -10px on a
+    390px viewport. Below 480px the wrapper drops its positioning so the panel
+    anchors to the tab bar instead (already `position: relative` with
+    `overflow: visible`), same top, right-aligned to the bar — all 340px back on
+    screen at x=40. Above 480px the button-anchored alignment is untouched.
+  - `git-branches.test.js` asserted the opposite contract ("hides the panel on
+    mobile with the same query as the file explorer") and had to be rewritten; it
+    now pins the narrow-screen re-anchor and the tab bar's role in it.
+
 ## [4.1.3] - 2026-09-03
 
 ### Fixed
