@@ -171,6 +171,54 @@ function readStatus(repoPath) {
   });
 }
 
+// Every descendant of a pid, deepest last, read from /proc.
+//
+// Linux-only by design. This project already leans on /proc elsewhere (the
+// instance registry probes liveness through it) and it is a self-hosted tool,
+// not a portable product. Where /proc is absent this returns just the pid, and
+// the caller degrades to killing the direct child — no worse than before.
+function processTree(pid) {
+  const found = [pid];
+  const queue = [pid];
+  while (queue.length) {
+    const current = queue.shift();
+    let kids = [];
+    try {
+      // One entry per thread; a process's children can be listed under any of
+      // them, so read them all.
+      const tasks = fs.readdirSync(`/proc/${current}/task`);
+      for (const task of tasks) {
+        const raw = fs.readFileSync(`/proc/${current}/task/${task}/children`, 'utf8');
+        kids = kids.concat(raw.split(/\s+/).filter(Boolean).map(Number));
+      }
+    } catch (_) {
+      // Process exited between listing and reading, or no /proc at all.
+    }
+    for (const kid of kids) {
+      if (Number.isInteger(kid) && kid > 0 && !found.includes(kid)) {
+        found.push(kid);
+        queue.push(kid);
+      }
+    }
+  }
+  return found;
+}
+
+// Kill a process and everything it spawned.
+//
+// Children first: killing the parent first can let a child be reparented to
+// init before we get to it, and then it is no longer in the tree we collected.
+let logKilledTree = () => {};
+function setKilledTreeLogger(fn) { logKilledTree = fn; }
+
+function killTree(pid) {
+  const tree = processTree(pid);
+  for (const target of tree.slice().reverse()) {
+    try { process.kill(target, 'SIGKILL'); } catch (_) { /* already gone */ }
+  }
+  return tree;
+}
+
 // A remote URL can carry credentials — `http://user:pass@host/...` was sitting
 // in two of these repos' .git/config. git echoes the URL back in its errors, so
 // scrub before anything is handed to a browser.
@@ -204,35 +252,32 @@ async function pullRepo(repoPath) {
 
   const before = readHead(repoPath);
   return new Promise((resolve) => {
-    // Time it out by hand rather than with execFile's own `timeout`.
+    // Time it out by hand rather than with execFile's own `timeout`, and kill
+    // the process TREE rather than the process.
     //
     // `git pull` is a wrapper: it forks `git fetch`, which forks
-    // `git remote-http`. execFile's timeout signals only the wrapper, and by
-    // the time its callback runs the pid is spent — so killing the group from
-    // there hits nothing, and the two children keep running. Measured against
-    // an unreachable remote: two orphans per attempt, twice.
+    // `git remote-http`. execFile's timeout signals only the wrapper, so both
+    // children survive — measured against an unreachable remote.
     //
-    // Owning the timer means killing the whole group while the pid is still
-    // valid, which is what actually reaches the children.
+    // Process groups are not the way out here, and the experiment that proved
+    // it is worth recording. `detached: true` did NOT make the child a group
+    // leader: its pid was 2524895 while its pgid was 2524887, so
+    // `process.kill(-child.pid)` raised ESRCH — killing a group that does not
+    // exist. Reaching for the *real* pgid instead killed the test runner
+    // itself, because without detach the child sits in its parent's group.
+    // In the server that would mean a pull timeout taking cc-web down with it.
+    //
+    // So: walk the tree and kill exactly its members. No assumptions about
+    // groups, and no way to reach anything outside this one process.
     let child;
     let timedOut = false;
     let timer = null;
-    const killGroup = () => {
-      try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {
-        try { child.kill('SIGKILL'); } catch (_) { /* already gone */ }
-      }
-    };
     child = execFile(
       'git',
       ['-C', repoPath, 'pull', '--ff-only'],
       {
         maxBuffer: STATUS_MAX_BUFFER,
         windowsHide: true,
-        // `git pull` is a wrapper: it forks `git fetch`, which forks
-        // `git remote-http`. Killing the wrapper leaves those two running —
-        // measured, against an unreachable remote. Its own process group lets
-        // the timeout take the whole tree down instead of decapitating it.
-        detached: true,
         // No terminal here, so a credential prompt would hang rather than ask.
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       },
@@ -267,7 +312,10 @@ async function pullRepo(repoPath) {
     );
     timer = setTimeout(() => {
       timedOut = true;
-      killGroup();
+      const killed = killTree(child.pid);
+      if (killed.length > 1) {
+        logKilledTree(killed);
+      }
       // Resolve here rather than waiting for the exec callback. Killing the
       // group can leave that callback un-fired — the caller would then wait
       // forever on a promise that never settles, which is a worse failure than
@@ -292,4 +340,4 @@ async function attachStatus(repos) {
   return repos;
 }
 
-module.exports = { scanBranches, attachStatus, readHead, readStatus, pullRepo, redactCredentials, MAX_REPOS, MAX_ENTRIES, PULL_TIMEOUT_MS };
+module.exports = { scanBranches, attachStatus, readHead, readStatus, pullRepo, redactCredentials, processTree, killTree, setKilledTreeLogger, MAX_REPOS, MAX_ENTRIES, PULL_TIMEOUT_MS };

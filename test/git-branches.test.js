@@ -321,3 +321,147 @@ describe('branch panel styling', function () {
       'the tab bar is the positioning context that re-anchoring falls back to');
   });
 });
+
+describe('git pull', function () {
+  this.timeout(30000);
+
+  const { execFileSync, execFile } = require('child_process');
+  const gitb = require('../src/git-branches');
+
+  function git(cwd, ...args) {
+    execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+  }
+
+  let root;
+  let bare;
+  let mine;
+  let theirs;
+
+  beforeEach(function () {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccw-pull-'));
+    bare = path.join(root, 'origin.git');
+    mine = path.join(root, 'mine');
+    theirs = path.join(root, 'theirs');
+
+    execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'pipe' });
+    execFileSync('git', ['clone', '-q', bare, mine], { stdio: 'pipe' });
+    git(mine, 'config', 'user.email', 'test@example.com');
+    git(mine, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(mine, 'f.txt'), 'v1\n');
+    git(mine, 'add', 'f.txt');
+    git(mine, 'commit', '-qm', 'first');
+    git(mine, 'push', '-q', '-u', 'origin', 'HEAD');
+
+    execFileSync('git', ['clone', '-q', bare, theirs], { stdio: 'pipe' });
+    git(theirs, 'config', 'user.email', 'other@example.com');
+    git(theirs, 'config', 'user.name', 'Other');
+  });
+
+  afterEach(function () {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // Someone else pushes, so `mine` is behind by one.
+  function advanceUpstream(text) {
+    fs.writeFileSync(path.join(theirs, 'f.txt'), text);
+    git(theirs, 'commit', '-qam', 'upstream work');
+    git(theirs, 'push', '-q');
+  }
+
+  it('fast-forwards a clean repo that is behind', async function () {
+    advanceUpstream('v2\n');
+    const before = execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const result = await gitb.pullRepo(mine);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.reason, 'updated');
+    const after = execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    assert.notStrictEqual(after, before, 'HEAD moved');
+    assert.strictEqual(fs.readFileSync(path.join(mine, 'f.txt'), 'utf8'), 'v2\n');
+  });
+
+  it('reports up-to-date without pretending it did something', async function () {
+    const result = await gitb.pullRepo(mine);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.reason, 'up-to-date');
+  });
+
+  it('refuses over uncommitted work AND leaves it untouched', async function () {
+    // The one outcome that costs the user something they cannot recover: a
+    // pull merging over changes they never committed.
+    advanceUpstream('v2\n');
+    fs.writeFileSync(path.join(mine, 'mywork.txt'), 'not committed yet\n');
+    const statusBefore = execFileSync('git', ['-C', mine, 'status', '--porcelain'], { encoding: 'utf8' });
+    const headBefore = execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+
+    const result = await gitb.pullRepo(mine);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'dirty');
+
+    assert.strictEqual(execFileSync('git', ['-C', mine, 'status', '--porcelain'], { encoding: 'utf8' }), statusBefore);
+    assert.strictEqual(execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' }), headBefore);
+    assert.strictEqual(fs.readFileSync(path.join(mine, 'mywork.txt'), 'utf8'), 'not committed yet\n');
+  });
+
+  it('refuses a diverged branch instead of building a merge commit', async function () {
+    advanceUpstream('v2\n');
+    fs.writeFileSync(path.join(mine, 'local.txt'), 'local\n');
+    git(mine, 'add', 'local.txt');
+    git(mine, 'commit', '-qm', 'local only');
+    const headBefore = execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+
+    const result = await gitb.pullRepo(mine);
+    assert.strictEqual(result.reason, 'not-fast-forward');
+    assert.strictEqual(execFileSync('git', ['-C', mine, 'rev-parse', 'HEAD'], { encoding: 'utf8' }), headBefore);
+  });
+
+  it('refuses a directory that is not a repository', async function () {
+    assert.strictEqual((await gitb.pullRepo(root)).reason, 'not-a-repo');
+  });
+
+  it('scrubs credentials out of anything it hands back', async function () {
+    // Two of the real repos had `http://user:pass@host/...` in .git/config, and
+    // git echoes the remote URL back in its errors.
+    const dirty = 'fatal: unable to access http://gongxy:Secret123@git.example.cn/x.git/';
+    const clean = gitb.redactCredentials(dirty);
+    assert.ok(!clean.includes('Secret123'), 'the password is gone');
+    assert.ok(clean.includes('***:***@'), 'and it is visibly redacted');
+  });
+
+  describe('timeout kills the whole process tree', function () {
+    // Groups are not an option here, and the experiment that ruled them out is
+    // recorded in git-branches.js: detached did not make the child a group
+    // leader, and killing the real pgid took down the test runner itself.
+    it('collects a process and its descendants', function (done) {
+      const child = execFile('bash', ['-c', 'sleep 30 & sleep 30 & wait'], () => {});
+      setTimeout(() => {
+        const tree = gitb.processTree(child.pid);
+        assert.ok(tree.length >= 3, `expected the shell and both sleeps, got ${tree.length}`);
+        assert.strictEqual(tree[0], child.pid);
+        assert.ok(!tree.includes(process.pid), 'and it must never contain us');
+        gitb.killTree(child.pid);
+        done();
+      }, 400);
+    });
+
+    it('leaves nothing behind, and leaves us alive', function (done) {
+      const child = execFile('bash', ['-c', 'sleep 30 & sleep 30 & wait'], () => {});
+      setTimeout(() => {
+        const killed = gitb.killTree(child.pid);
+        setTimeout(() => {
+          for (const pid of killed) {
+            let alive = true;
+            try { process.kill(pid, 0); } catch (_) { alive = false; }
+            assert.strictEqual(alive, false, `pid ${pid} survived`);
+          }
+          // The check that matters most: an earlier attempt at this killed the
+          // caller. In the server that is cc-web taking itself down on a pull
+          // timeout.
+          let selfAlive = true;
+          try { process.kill(process.pid, 0); } catch (_) { selfAlive = false; }
+          assert.strictEqual(selfAlive, true, 'the caller must survive');
+          done();
+        }, 500);
+      }, 400);
+    });
+  });
+});

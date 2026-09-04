@@ -103,6 +103,26 @@ npx claude-code-web --disable-auth
 | `CCWEB_AUTH` | Authentication token. Beats `--auth`, loses to `--auth-file`. `/proc/<pid>/environ` is readable only by the owner, unlike `cmdline`. |
 | `CCW_DATA_DIR` | Where sessions, plan dirs and the instance registry live. Defaults to `~/.claude-code-web`. Point a second instance at another directory to isolate it. |
 
+### Pulling from the branch panel
+
+Each repository in the branch panel has a pull button. It runs
+`git pull --ff-only`, so it either moves cleanly forward or does nothing and
+says why — a plain pull would build a merge commit when the local branch has
+its own work, and real merges belong in a terminal where someone can answer the
+questions.
+
+It refuses outright over uncommitted changes, without touching the working tree.
+Reasons you may see: `uncommitted changes`, `no upstream`, `needs a merge`,
+`timed out`.
+
+`POST /api/git/pull { path, name }` — header auth, and the target must be a git
+repository, not merely a readable path, since this is the panel's only write.
+The timeout is 60s: eleven real repositories fetch in ~1.6s, but one took over
+120s with an identical remote and a 3.5 MB `.git`, and slow is not broken.
+On timeout the whole process tree is killed — `git pull` forks `git fetch`,
+which forks `git remote-http`, and signalling only the wrapper leaves both
+children running.
+
 ### Where sessions are kept
 
 One file per session, under the data directory:
