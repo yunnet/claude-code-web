@@ -103,6 +103,28 @@ npx claude-code-web --disable-auth
 | `CCWEB_AUTH` | Authentication token. Beats `--auth`, loses to `--auth-file`. `/proc/<pid>/environ` is readable only by the owner, unlike `cmdline`. |
 | `CCW_DATA_DIR` | Where sessions, plan dirs and the instance registry live. Defaults to `~/.claude-code-web`. Point a second instance at another directory to isolate it. |
 
+### Where sessions are kept
+
+One file per session, under the data directory:
+
+```
+<data dir>/sessions/<session-id>.json
+```
+
+Not a single `sessions.json` — that file was rewritten in full every thirty
+seconds, so two servers sharing a data directory would overwrite each other's
+sessions with no error. One writer per file removes the shared document, and a
+corrupt file now costs one session instead of the whole list.
+
+An existing `sessions.json` is split into per-session files on first run and
+then left in place, unmodified.
+
+Closing a session deletes its file. Sessions untouched for more than 7 days are
+dropped on load, judged per session.
+
+**Two servers cannot share a data directory.** The second one to start refuses,
+naming the instance already there. Give each its own with `CCW_DATA_DIR`.
+
 ### Instance registry
 
 Each running server writes `<data dir>/instances/<port>.lock` — the filename is the

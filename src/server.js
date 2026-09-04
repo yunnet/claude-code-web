@@ -103,6 +103,30 @@ class ClaudeCodeWebServer {
     this.retractInstanceLock();
   }
 
+  // Is another *live* server already pointed at our data directory?
+  //
+  // This is the check that was missing on 2026-09-03, when a restart lost its
+  // CCW_DATA_DIR and the dev instance quietly adopted stable's directory. Both
+  // then read and wrote the same sessions with no indication anything was wrong.
+  // Per-session files stop that from destroying data; this stops it happening.
+  //
+  // Our own stale lock from a previous run is not a conflict — its pid is gone,
+  // and refusing to restart after a crash would be worse than the problem.
+  findDataDirConflict() {
+    try {
+      const mine = instanceLock.dataDir();
+      for (const record of instanceLock.listLocks()) {
+        if (record.port === this.port) continue;
+        if (record.pid === process.pid) continue;
+        if (record.dataDir !== mine) continue;
+        if (instanceLock.isLockLive(record)) return record;
+      }
+    } catch (_) {
+      // The check is a safety net, not a gate. If it cannot run, start anyway.
+    }
+    return null;
+  }
+
   // Announce this instance in <dataDir>/instances/<port>.lock: which source tree
   // it runs from, which data dir it owns, and the auth token. Before this, the
   // only way to answer "which port is which checkout" was reading /proc, and the
@@ -544,7 +568,11 @@ class ClaudeCodeWebServer {
 
       this.claudeSessions.delete(sessionId);
 
-      // Save sessions after deletion
+      // Deleting used to be implicit: saveSessions() rewrote the whole file, so
+      // a session missing from the map simply vanished. Per-session files have
+      // no such side effect — and deliberately so, since that side effect is
+      // what let two instances erase each other. Say it explicitly instead.
+      this.sessionStore.deleteSession(sessionId);
       this.saveSessionsToDisk();
 
       res.json({ success: true, message: 'Session deleted' });
@@ -834,6 +862,19 @@ class ClaudeCodeWebServer {
           // Only now: a lock written before listen succeeds would advertise a
           // port this process never got, and the next instance would find a
           // record pointing at nothing.
+          const conflict = this.findDataDirConflict();
+          if (conflict) {
+            console.error(
+              `\nAnother instance is already using this data directory.\n` +
+              `  this instance : port ${this.port}\n` +
+              `  already there : port ${conflict.port} (pid ${conflict.pid}), started ${conflict.startedAt}\n` +
+              `  data dir      : ${conflict.dataDir}\n\n` +
+              `Two servers sharing a data directory read and write each other's sessions.\n` +
+              `Set CCW_DATA_DIR to give this instance its own, or stop the other one.\n`,
+            );
+            server.close();
+            process.exit(1);
+          }
           this.publishInstanceLock();
           resolve(server);
         }

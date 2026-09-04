@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-09-04
+
+### Changed
+- **Sessions are stored one file per session** — `<data dir>/sessions/<id>.json`
+  instead of a single `sessions.json` rewritten in full every thirty seconds.
+
+  That rewrite was quietly destructive with two servers: on 2026-09-03 a restart
+  lost its `CCW_DATA_DIR`, the dev instance adopted stable's directory, and both
+  rewrote the whole file on their own timers. Last writer won, and nothing
+  errored.
+
+  SQLite was tried first and racing two writers against it disproved the
+  premise: the conflict was never about write atomicity. `saveSessions(map)`
+  means "this is the complete set", so it deletes what it does not recognise —
+  and an instance only recognises its own sessions. A transaction just makes the
+  deletion atomic. Measured, 30 rounds each:
+
+  | store | sessions left |
+  |---|---|
+  | single file | 1 of 2 — one silently gone |
+  | SQLite | 0 of 2 — both processes died (`database is locked`) |
+  | one file per session | **2 of 2** |
+
+  This is how Claude Code itself handles many CLI instances sharing `~/.claude`
+  (`sessions/<pid>.json`, one writer per file, aggregate on read), and the same
+  shape as this project's own `instances/<port>.lock`.
+
+  Two consequences worth knowing:
+  - **Deleting a session is now explicit.** It used to be a side effect of
+    rewriting the file without it — the very side effect that let two instances
+    erase each other's work.
+  - **Expiry is judged per session.** With one file there was a single
+    `savedAt`, so one active tab kept every stale sibling alive.
+
+  A corrupt file now costs one session instead of the whole list, and is moved
+  aside rather than left to trip the next load. An existing `sessions.json` is
+  split on first run and then **left exactly where it is** — reverting this is a
+  git operation, not a data recovery.
+
+### Added
+- **A second server pointed at an occupied data directory refuses to start**,
+  naming the port, pid and directory of the instance already there. This is the
+  check that was missing on 2026-09-03. A stale lock from your own crashed run
+  is not a conflict — refusing to restart after a crash would be worse than the
+  problem.
+
+### Fixed
+- `SessionStore` derived its paths in the constructor, so redirecting
+  `storageDir` afterwards silently kept writing to the real data directory. A
+  test run migrated the live instance's sessions that way. The paths are getters
+  now, and the tests set `CCW_DATA_DIR` on a temp dir instead of reaching in.
+
 ## [4.3.0] - 2026-09-03
 
 Borrowed from how Claude Code's CLI and its editor extension find each other.
