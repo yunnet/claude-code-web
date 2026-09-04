@@ -30,6 +30,11 @@ const HEAD_BYTES = 512;
 const STATUS_CONCURRENCY = 4;
 const STATUS_TIMEOUT_MS = 10000;
 const STATUS_MAX_BUFFER = 8 * 1024 * 1024;
+// Pull gets far longer than a status check. Measured across 11 real repos, a
+// fetch settles in ~1.6s — except one that had not finished after 120s with an
+// identical remote, helper and credential file, and a 3.5 MB .git. Slow is not
+// the same as broken, and a 15s ceiling would report it as broken.
+const PULL_TIMEOUT_MS = 60000;
 
 // Read at most `max` bytes from a file, without caring how big it really is.
 function readPrefix(file, max) {
@@ -166,6 +171,112 @@ function readStatus(repoPath) {
   });
 }
 
+// A remote URL can carry credentials — `http://user:pass@host/...` was sitting
+// in two of these repos' .git/config. git echoes the URL back in its errors, so
+// scrub before anything is handed to a browser.
+function redactCredentials(text) {
+  return String(text == null ? '' : text).replace(/\/\/[^\s/@]*:[^\s/@]*@/g, '//***:***@');
+}
+
+/**
+ * Fast-forward one repository from its upstream.
+ *
+ * --ff-only on purpose. A plain `git pull` builds a merge commit when the local
+ * branch has its own work, and can fail halfway through with a dirty tree. This
+ * either moves cleanly forward or does nothing and says why — which is the right
+ * default for a button whose whole job is "sync me up". Real merges belong in a
+ * terminal, where there is someone to answer the questions.
+ *
+ * @returns {Promise<{ok: boolean, reason: string, updated?: boolean, from?: string, to?: string, message?: string}>}
+ */
+async function pullRepo(repoPath) {
+  const head = readHead(repoPath);
+  if (!head) return { ok: false, reason: 'not-a-repo' };
+
+  // Look before touching. A pull over uncommitted work is the one outcome that
+  // costs the user something they cannot get back, so it is checked first and
+  // through the existing status reader rather than a second `git status` here.
+  const status = await readStatus(repoPath);
+  if (status === null) return { ok: false, reason: 'failed', message: 'could not read the working tree' };
+  if (status.dirty > 0) {
+    return { ok: false, reason: 'dirty', message: `${status.dirty} uncommitted change(s)` };
+  }
+
+  const before = readHead(repoPath);
+  return new Promise((resolve) => {
+    // Time it out by hand rather than with execFile's own `timeout`.
+    //
+    // `git pull` is a wrapper: it forks `git fetch`, which forks
+    // `git remote-http`. execFile's timeout signals only the wrapper, and by
+    // the time its callback runs the pid is spent — so killing the group from
+    // there hits nothing, and the two children keep running. Measured against
+    // an unreachable remote: two orphans per attempt, twice.
+    //
+    // Owning the timer means killing the whole group while the pid is still
+    // valid, which is what actually reaches the children.
+    let child;
+    let timedOut = false;
+    let timer = null;
+    const killGroup = () => {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {
+        try { child.kill('SIGKILL'); } catch (_) { /* already gone */ }
+      }
+    };
+    child = execFile(
+      'git',
+      ['-C', repoPath, 'pull', '--ff-only'],
+      {
+        maxBuffer: STATUS_MAX_BUFFER,
+        windowsHide: true,
+        // `git pull` is a wrapper: it forks `git fetch`, which forks
+        // `git remote-http`. Killing the wrapper leaves those two running —
+        // measured, against an unreachable remote. Its own process group lets
+        // the timeout take the whole tree down instead of decapitating it.
+        detached: true,
+        // No terminal here, so a credential prompt would hang rather than ask.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      },
+      (error, stdout, stderr) => {
+        if (timer) clearTimeout(timer);
+        const out = redactCredentials(`${stdout || ''}${stderr || ''}`).trim();
+        // Already settled by the timer above; a late callback has nothing to say.
+        if (timedOut) return;
+        if (error) {
+          if (error.killed || error.signal) {
+            return resolve({ ok: false, reason: 'timeout', message: `no response after ${PULL_TIMEOUT_MS / 1000}s` });
+          }
+          if (/no tracking information|no upstream/i.test(out)) {
+            return resolve({ ok: false, reason: 'no-upstream', message: 'this branch tracks nothing' });
+          }
+          if (/not possible to fast-forward|diverge/i.test(out)) {
+            return resolve({ ok: false, reason: 'not-fast-forward', message: 'local commits would need a merge' });
+          }
+          return resolve({ ok: false, reason: 'failed', message: out.split('\n')[0] || error.message });
+        }
+        const after = readHead(repoPath);
+        const updated = !!(before && after && before.branch !== after.branch) || !/Already up to date/i.test(out);
+        resolve({
+          ok: true,
+          reason: updated ? 'updated' : 'up-to-date',
+          updated,
+          from: before ? before.branch : null,
+          to: after ? after.branch : null,
+          message: out.split('\n')[0] || '',
+        });
+      },
+    );
+    timer = setTimeout(() => {
+      timedOut = true;
+      killGroup();
+      // Resolve here rather than waiting for the exec callback. Killing the
+      // group can leave that callback un-fired — the caller would then wait
+      // forever on a promise that never settles, which is a worse failure than
+      // the timeout it was meant to report.
+      resolve({ ok: false, reason: 'timeout', message: `no response after ${PULL_TIMEOUT_MS / 1000}s` });
+    }, PULL_TIMEOUT_MS);
+  });
+}
+
 // Attach working-tree status to an already-scanned repo list. Bounded
 // concurrency: 11 simultaneous `git status` runs on a cold cache is a real
 // I/O spike, and this server shares its single thread with live terminals.
@@ -181,4 +292,4 @@ async function attachStatus(repos) {
   return repos;
 }
 
-module.exports = { scanBranches, attachStatus, readHead, readStatus, MAX_REPOS, MAX_ENTRIES };
+module.exports = { scanBranches, attachStatus, readHead, readStatus, pullRepo, redactCredentials, MAX_REPOS, MAX_ENTRIES, PULL_TIMEOUT_MS };

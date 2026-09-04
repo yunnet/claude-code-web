@@ -2680,3 +2680,83 @@ body.overlay-open .folder-browser-modal { z-index: 5003; }
    and still below #fileExplorerModal (6000) and .plan-modal (10001). */
 body.overlay-open .session-modal        { z-index: 5004; }
 body.overlay-open .settings-modal       { z-index: 5004; }
+
+/* ---------------------------------------------------------------------------
+   Per-row pull button in the branch panel (.row-pull)
+
+   Self-contained, like the #branchBtn block above and for the same reason:
+   splicing selectors into an existing list is how #explorerBtn svg ended up
+   inside a display:none rule and the folder icon vanished (dbaf5ab).
+
+   Colours come from the panel's existing semantic set rather than a new
+   palette — .branch-ahead is already "something moved forward", .branch-behind
+   already "something is wrong".
+   --------------------------------------------------------------------------- */
+
+.row-pull {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    margin: 0;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    /* Quiet until the row is under the cursor: eleven always-lit buttons would
+       compete with the branch names, which are what the panel is for. */
+    opacity: 0;
+    transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.branch-row:hover .row-pull,
+.row-pull:focus-visible {
+    opacity: 1;
+}
+
+.row-pull:hover:not(:disabled) {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.row-pull:disabled {
+    opacity: 1;
+    cursor: default;
+    color: var(--text-secondary);
+}
+
+.row-pull .pull-icon {
+    width: 14px;
+    height: 14px;
+}
+
+/* A pull in flight: the button stays visible so the row does not appear to
+   forget what it is doing when the pointer moves away. */
+.branch-row.pulling .row-pull {
+    opacity: 1;
+}
+
+.branch-row.pulling .pull-icon {
+    animation: row-pull-spin 0.9s linear infinite;
+}
+
+@keyframes row-pull-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .branch-row.pulling .pull-icon { animation: none; }
+}
+
+/* Reuse the panel's existing semantic colours instead of inventing a pair:
+   .branch-ahead is already "moved forward", .branch-behind already "wrong".
+   Both are defined per theme a few blocks up, so these follow the theme too. */
+.branch-ref.pull-ok  { color: #3fb950; }
+.branch-ref.pull-bad { color: #ff7b72; }
+
+[data-theme="light"] .branch-ref.pull-ok  { color: #1a7f37; }
+[data-theme="light"] .branch-ref.pull-bad { color: #c4232f; }
