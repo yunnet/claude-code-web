@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+- **A pull button on each repository in the branch panel.** `git pull --ff-only`:
+  it either fast-forwards cleanly or does nothing and says why. A plain pull
+  would build a merge commit when the local branch has its own work, and can
+  fail halfway with a dirty tree; real merges belong in a terminal.
+
+  Refused outright over uncommitted changes, verified to leave the working tree
+  byte-identical. Credentials are scrubbed from anything handed back — two of
+  these repositories had `http://user:pass@host/...` in `.git/config`, and git
+  echoes the remote URL back in its errors.
+
+  `POST /api/git/pull` requires the target to be a git repository, not merely a
+  readable path: it is the panel's only write, so `validatePath` alone would
+  amount to "run git wherever you can name".
+
+### Fixed
+- **A pull that times out no longer leaves git processes behind.** `git pull`
+  forks `git fetch`, which forks `git remote-http`; signalling the wrapper left
+  both children running, measured against an unreachable remote.
+
+  Process groups turned out to be the wrong tool, and dangerously so.
+  `detached: true` did not make the child a group leader — pid 2524895 against
+  pgid 2524887 — so `kill(-child.pid)` raised ESRCH against a group that never
+  existed. Reaching for the real pgid instead killed the test runner, because
+  without detach the child sits in its parent's group; in the server that is a
+  pull timeout taking cc-web down with it.
+
+  The timeout now walks `/proc/<pid>/task/*/children` and kills exactly that
+  tree, deepest first. Measured: four processes killed, none left, caller alive.
+
 ## [4.4.0] - 2026-09-04
 
 ### Changed

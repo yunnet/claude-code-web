@@ -719,6 +719,12 @@ class ClaudeCodeWebServer {
     // repo instead of a single file read, so it is opt-in per request.
     this.app.get('/api/git/branches', ClaudeCodeWebServer.asyncRoute((req, res) => this.listBranches(req, res)));
 
+    // Fast-forward one repository. The only write in the branch panel, so it is
+    // deliberately narrow: --ff-only, refused outright over a dirty tree, and
+    // the target must actually be a git repository — validatePath alone would
+    // otherwise amount to "run git in any directory you can name".
+    this.app.post('/api/git/pull', ClaudeCodeWebServer.asyncRoute((req, res) => this.pullRepo(req, res)));
+
     // Runtime-editable plan directories (additive to auto-discovery). Normal
     // header auth. GET returns the configured dirs plus active session roots (the
     // latter are already auto-covered, shown for context). POST replaces the list
@@ -1498,15 +1504,56 @@ class ClaudeCodeWebServer {
   // read-only file explorer. Folders first, then files, each with size/mtime.
   // Scope matches the folder browser: any path the user's account can read (this
   // is a local, auth-protected, single-user tool).
-  // status=1 forks a git process per repo. Run the scans one after another so a
-  // client that hammers the endpoint queues up instead of multiplying the fork
-  // count across the shared single-threaded server. Concurrency *within* one
-  // scan is still bounded separately, in git-branches.js.
-  runStatusScan(repos) {
-    const start = () => gitBranches.attachStatus(repos);
-    const next = (this.branchStatusChain || Promise.resolve()).then(start, start);
-    this.branchStatusChain = next.catch(() => {});
+  // Run git work one job at a time.
+  //
+  // Every git operation here forks a process — a status scan forks one per repo,
+  // a pull forks one and can sit there for a minute. Letting a browser fire
+  // those in parallel multiplies the fork count across a server that shares its
+  // single thread with live terminals. A failing job must not wedge the queue,
+  // hence the same handler on both settle paths.
+  queueGitJob(job) {
+    const next = (this.gitJobChain || Promise.resolve()).then(job, job);
+    this.gitJobChain = next.catch(() => {});
     return next;
+  }
+
+  runStatusScan(repos) {
+    return this.queueGitJob(() => gitBranches.attachStatus(repos));
+  }
+
+  // POST /api/git/pull { path, name }
+  //
+  // Takes the parent directory plus a repo NAME rather than a full path,
+  // because listBranches deliberately strips absolute paths out of its
+  // response — the client renders names and has no business holding the
+  // filesystem layout. `name` is one path segment, checked as such, so
+  // rejoining cannot climb anywhere.
+  async pullRepo(req, res) {
+    const raw = req.body && req.body.path;
+    const name = req.body && req.body.name;
+    if (typeof raw !== 'string' || !raw) {
+      return res.status(400).json({ error: 'path is required' });
+    }
+    if (name !== undefined && (typeof name !== 'string' || !name || name.includes('/') || name.includes('\\') || name === '..')) {
+      return res.status(400).json({ error: 'name must be a single path segment' });
+    }
+    // '.' is how the scan reports "the directory itself is the repository".
+    const target = (!name || name === '.') ? raw : path.join(raw, name);
+    const validation = this.validatePath(target);
+    if (!validation.valid) {
+      return res.status(403).json({ error: validation.error, message: 'Access to this directory is not allowed' });
+    }
+    // Second gate, and the important one: this endpoint executes a write. A path
+    // that is not a repository is refused before git is invoked at all.
+    if (!gitBranches.readHead(validation.path)) {
+      return res.status(400).json({ error: 'Not a git repository', reason: 'not-a-repo' });
+    }
+    try {
+      const result = await this.queueGitJob(() => gitBranches.pullRepo(validation.path));
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ ok: false, reason: 'failed', message: gitBranches.redactCredentials(error.message) });
+    }
   }
 
   // GET /api/git/branches?path=<dir>[&status=1]

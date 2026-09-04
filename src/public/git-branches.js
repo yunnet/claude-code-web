@@ -25,6 +25,16 @@
   // prevent. Groups beyond the sixth stay muted instead.
   const GROUP_COUNT = 6;
 
+  // Same shape as the file explorer's row-download icon: a small outline glyph
+  // parsed once and cloned per row, rather than re-running the HTML parser
+  // eleven times.
+  const PULL_ICON = '<svg class="pull-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 21h16"/></svg>';
+  const pullIconNode = (() => {
+    const t = document.createElement('template');
+    t.innerHTML = PULL_ICON;
+    return t.content.firstElementChild;
+  })();
+
   class BranchPanel {
     constructor() {
       this.bound = false;
@@ -65,6 +75,15 @@
         if (wrap && !wrap.contains(e.target)) this.hide();
       });
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.open) this.hide(); });
+      // One delegated listener for every row, the way the file explorer does it:
+      // eleven rows would otherwise mean eleven closures, re-created on every
+      // render. The target travels in dataset, never innerHTML.
+      this.el('branchList').addEventListener('click', (e) => {
+        const btn = e.target.closest && e.target.closest('.row-pull');
+        if (!btn || btn.disabled) return;
+        e.stopPropagation();
+        this.pull(btn);
+      });
     }
 
     toggle() { this.open ? this.hide() : this.show(); }
@@ -182,6 +201,15 @@
         if (repo.ahead) meta.appendChild(this.badge('↑' + repo.ahead, 'branch-ahead', repo.ahead + ' commit(s) ahead of upstream'));
         if (repo.behind) meta.appendChild(this.badge('↓' + repo.behind, 'branch-behind', repo.behind + ' commit(s) behind upstream'));
 
+        const pull = document.createElement('button');
+        pull.className = 'row-pull';
+        pull.type = 'button';
+        pull.title = `Fast-forward ${repo.name} from its upstream`;
+        pull.setAttribute('aria-label', `Pull ${repo.name}`);
+        pull.dataset.repo = repo.name;
+        pull.appendChild(pullIconNode.cloneNode(true));
+        meta.appendChild(pull);
+
         const branch = document.createElement('span');
         branch.className = 'branch-ref' + (repo.detached ? ' detached' : '');
         branch.textContent = repo.detached ? 'detached @ ' + repo.branch : repo.branch;
@@ -202,6 +230,69 @@
       // whose job is "every sub-project" must say so rather than look complete.
       if (data.unexamined) info += ' · ' + data.unexamined + ' dirs not examined';
       this.el('branchFooterInfo').textContent = info;
+    }
+
+    // Fast-forward one repo, then show what happened on its own row.
+    //
+    // The result replaces the branch name in place rather than popping a toast:
+    // the answer belongs next to the thing it is about, and eleven rows of
+    // toasts would be unreadable.
+    async pull(btn) {
+      const row = btn.closest('.branch-row');
+      const name = btn.dataset.repo;
+      if (!row || !name) return;
+
+      const note = row.querySelector('.branch-ref');
+      const wasText = note ? note.textContent : '';
+      const wasClass = note ? note.className : '';
+      btn.disabled = true;
+      row.classList.add('pulling');
+      if (note) { note.textContent = 'pulling...'; note.className = 'branch-ref'; }
+
+      let result;
+      try {
+        const res = await fetch('/api/git/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...window.authManager.getAuthHeaders() },
+          body: JSON.stringify({ path: this.dir, name }),
+        });
+        result = await res.json();
+      } catch (error) {
+        result = { ok: false, reason: 'failed', message: error.message };
+      }
+
+      row.classList.remove('pulling');
+      btn.disabled = false;
+      if (!note) return;
+
+      if (result && result.ok && result.reason === 'up-to-date') {
+        note.textContent = 'up to date';
+        note.className = 'branch-ref pull-ok';
+      } else if (result && result.ok) {
+        note.textContent = 'updated';
+        note.className = 'branch-ref pull-ok';
+        // The branch may have moved; refresh so the panel is not left showing
+        // what was true before the pull.
+        setTimeout(() => this.load(), 1200);
+      } else {
+        const why = {
+          dirty: 'uncommitted changes',
+          'no-upstream': 'no upstream',
+          'not-fast-forward': 'needs a merge',
+          timeout: 'timed out',
+          'not-a-repo': 'not a repository',
+        }[result && result.reason] || 'failed';
+        note.textContent = why;
+        note.className = 'branch-ref pull-bad';
+        note.title = (result && result.message) || why;
+        // Put the branch name back once the reason has been read.
+        setTimeout(() => {
+          if (note.classList.contains('pull-bad')) {
+            note.textContent = wasText;
+            note.className = wasClass;
+          }
+        }, 6000);
+      }
     }
 
     badge(text, cls, title) {

@@ -30,6 +30,11 @@ const HEAD_BYTES = 512;
 const STATUS_CONCURRENCY = 4;
 const STATUS_TIMEOUT_MS = 10000;
 const STATUS_MAX_BUFFER = 8 * 1024 * 1024;
+// Pull gets far longer than a status check. Measured across 11 real repos, a
+// fetch settles in ~1.6s — except one that had not finished after 120s with an
+// identical remote, helper and credential file, and a 3.5 MB .git. Slow is not
+// the same as broken, and a 15s ceiling would report it as broken.
+const PULL_TIMEOUT_MS = 60000;
 
 // Read at most `max` bytes from a file, without caring how big it really is.
 function readPrefix(file, max) {
@@ -166,6 +171,160 @@ function readStatus(repoPath) {
   });
 }
 
+// Every descendant of a pid, deepest last, read from /proc.
+//
+// Linux-only by design. This project already leans on /proc elsewhere (the
+// instance registry probes liveness through it) and it is a self-hosted tool,
+// not a portable product. Where /proc is absent this returns just the pid, and
+// the caller degrades to killing the direct child — no worse than before.
+function processTree(pid) {
+  const found = [pid];
+  const queue = [pid];
+  while (queue.length) {
+    const current = queue.shift();
+    let kids = [];
+    try {
+      // One entry per thread; a process's children can be listed under any of
+      // them, so read them all.
+      const tasks = fs.readdirSync(`/proc/${current}/task`);
+      for (const task of tasks) {
+        const raw = fs.readFileSync(`/proc/${current}/task/${task}/children`, 'utf8');
+        kids = kids.concat(raw.split(/\s+/).filter(Boolean).map(Number));
+      }
+    } catch (_) {
+      // Process exited between listing and reading, or no /proc at all.
+    }
+    for (const kid of kids) {
+      if (Number.isInteger(kid) && kid > 0 && !found.includes(kid)) {
+        found.push(kid);
+        queue.push(kid);
+      }
+    }
+  }
+  return found;
+}
+
+// Kill a process and everything it spawned.
+//
+// Children first: killing the parent first can let a child be reparented to
+// init before we get to it, and then it is no longer in the tree we collected.
+let logKilledTree = () => {};
+function setKilledTreeLogger(fn) { logKilledTree = fn; }
+
+function killTree(pid) {
+  const tree = processTree(pid);
+  for (const target of tree.slice().reverse()) {
+    try { process.kill(target, 'SIGKILL'); } catch (_) { /* already gone */ }
+  }
+  return tree;
+}
+
+// A remote URL can carry credentials — `http://user:pass@host/...` was sitting
+// in two of these repos' .git/config. git echoes the URL back in its errors, so
+// scrub before anything is handed to a browser.
+function redactCredentials(text) {
+  return String(text == null ? '' : text).replace(/\/\/[^\s/@]*:[^\s/@]*@/g, '//***:***@');
+}
+
+/**
+ * Fast-forward one repository from its upstream.
+ *
+ * --ff-only on purpose. A plain `git pull` builds a merge commit when the local
+ * branch has its own work, and can fail halfway through with a dirty tree. This
+ * either moves cleanly forward or does nothing and says why — which is the right
+ * default for a button whose whole job is "sync me up". Real merges belong in a
+ * terminal, where there is someone to answer the questions.
+ *
+ * @returns {Promise<{ok: boolean, reason: string, updated?: boolean, from?: string, to?: string, message?: string}>}
+ */
+async function pullRepo(repoPath) {
+  const head = readHead(repoPath);
+  if (!head) return { ok: false, reason: 'not-a-repo' };
+
+  // Look before touching. A pull over uncommitted work is the one outcome that
+  // costs the user something they cannot get back, so it is checked first and
+  // through the existing status reader rather than a second `git status` here.
+  const status = await readStatus(repoPath);
+  if (status === null) return { ok: false, reason: 'failed', message: 'could not read the working tree' };
+  if (status.dirty > 0) {
+    return { ok: false, reason: 'dirty', message: `${status.dirty} uncommitted change(s)` };
+  }
+
+  const before = readHead(repoPath);
+  return new Promise((resolve) => {
+    // Time it out by hand rather than with execFile's own `timeout`, and kill
+    // the process TREE rather than the process.
+    //
+    // `git pull` is a wrapper: it forks `git fetch`, which forks
+    // `git remote-http`. execFile's timeout signals only the wrapper, so both
+    // children survive — measured against an unreachable remote.
+    //
+    // Process groups are not the way out here, and the experiment that proved
+    // it is worth recording. `detached: true` did NOT make the child a group
+    // leader: its pid was 2524895 while its pgid was 2524887, so
+    // `process.kill(-child.pid)` raised ESRCH — killing a group that does not
+    // exist. Reaching for the *real* pgid instead killed the test runner
+    // itself, because without detach the child sits in its parent's group.
+    // In the server that would mean a pull timeout taking cc-web down with it.
+    //
+    // So: walk the tree and kill exactly its members. No assumptions about
+    // groups, and no way to reach anything outside this one process.
+    let child;
+    let timedOut = false;
+    let timer = null;
+    child = execFile(
+      'git',
+      ['-C', repoPath, 'pull', '--ff-only'],
+      {
+        maxBuffer: STATUS_MAX_BUFFER,
+        windowsHide: true,
+        // No terminal here, so a credential prompt would hang rather than ask.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      },
+      (error, stdout, stderr) => {
+        if (timer) clearTimeout(timer);
+        const out = redactCredentials(`${stdout || ''}${stderr || ''}`).trim();
+        // Already settled by the timer above; a late callback has nothing to say.
+        if (timedOut) return;
+        if (error) {
+          if (error.killed || error.signal) {
+            return resolve({ ok: false, reason: 'timeout', message: `no response after ${PULL_TIMEOUT_MS / 1000}s` });
+          }
+          if (/no tracking information|no upstream/i.test(out)) {
+            return resolve({ ok: false, reason: 'no-upstream', message: 'this branch tracks nothing' });
+          }
+          if (/not possible to fast-forward|diverge/i.test(out)) {
+            return resolve({ ok: false, reason: 'not-fast-forward', message: 'local commits would need a merge' });
+          }
+          return resolve({ ok: false, reason: 'failed', message: out.split('\n')[0] || error.message });
+        }
+        const after = readHead(repoPath);
+        const updated = !!(before && after && before.branch !== after.branch) || !/Already up to date/i.test(out);
+        resolve({
+          ok: true,
+          reason: updated ? 'updated' : 'up-to-date',
+          updated,
+          from: before ? before.branch : null,
+          to: after ? after.branch : null,
+          message: out.split('\n')[0] || '',
+        });
+      },
+    );
+    timer = setTimeout(() => {
+      timedOut = true;
+      const killed = killTree(child.pid);
+      if (killed.length > 1) {
+        logKilledTree(killed);
+      }
+      // Resolve here rather than waiting for the exec callback. Killing the
+      // group can leave that callback un-fired — the caller would then wait
+      // forever on a promise that never settles, which is a worse failure than
+      // the timeout it was meant to report.
+      resolve({ ok: false, reason: 'timeout', message: `no response after ${PULL_TIMEOUT_MS / 1000}s` });
+    }, PULL_TIMEOUT_MS);
+  });
+}
+
 // Attach working-tree status to an already-scanned repo list. Bounded
 // concurrency: 11 simultaneous `git status` runs on a cold cache is a real
 // I/O spike, and this server shares its single thread with live terminals.
@@ -181,4 +340,4 @@ async function attachStatus(repos) {
   return repos;
 }
 
-module.exports = { scanBranches, attachStatus, readHead, readStatus, MAX_REPOS, MAX_ENTRIES };
+module.exports = { scanBranches, attachStatus, readHead, readStatus, pullRepo, redactCredentials, processTree, killTree, setKilledTreeLogger, MAX_REPOS, MAX_ENTRIES, PULL_TIMEOUT_MS };
