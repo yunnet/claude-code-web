@@ -20,6 +20,8 @@
   const FILE_ICON_NODE = iconNode(FILE_ICON);
   const DOWNLOAD_ICON_NODE = iconNode(DOWNLOAD_ICON);
 
+  const toast = (msg, err) => { try { window.app && window.app.showToast(msg, err); } catch (_) {} };
+
   function formatSize(bytes) {
     if (!bytes) return '';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -78,6 +80,42 @@
         // Not previewable: the browser could only have downloaded it or shown a
         // blank tab, so do the honest thing directly.
         else this.downloadFile(row.dataset.path);
+      });
+
+      // Upload, entry point 1: the toolbar button drives a hidden file input.
+      const fileInput = this.el('explorerFileInput');
+      const uploadBtn = this.el('explorerUploadBtn');
+      if (uploadBtn && fileInput) {
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async () => {
+          const files = Array.from(fileInput.files || []);
+          // Clear first: re-picking the SAME file fires no change event while the
+          // input still holds it, which reads as "the upload button stopped working".
+          fileInput.value = '';
+          await this.uploadFiles(files);
+        });
+      }
+
+      // Upload, entry point 2: drop onto the listing. Desktop only — a phone has
+      // no drag source — which is why the button above is not optional.
+      const list = this.el('explorerList');
+      const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+      list.addEventListener('dragover', (e) => {
+        // Without preventDefault here the browser navigates to the file on drop
+        // and no drop event ever fires.
+        stop(e);
+        e.dataTransfer.dropEffect = 'copy';
+        list.classList.add('drag-over');
+      });
+      list.addEventListener('dragleave', (e) => {
+        // Fires when crossing onto a child row too, so only drop the highlight
+        // once the pointer has actually left the list.
+        if (e.target === list || !list.contains(e.relatedTarget)) list.classList.remove('drag-over');
+      });
+      list.addEventListener('drop', async (e) => {
+        stop(e);
+        list.classList.remove('drag-over');
+        await this.uploadFiles(this.filesFromDrop(e.dataTransfer));
       });
 
       // Esc closes while the explorer is open.
@@ -316,13 +354,73 @@
       return FileExplorer.RENDERED_EXTS.some((ext) => name.endsWith(ext));
     }
 
+    // A drop can carry directories, which the browser will happily hand over as a
+    // zero-byte File with no type. webkitGetAsEntry is the only way to tell the
+    // two apart before reading, so directories are dropped here rather than
+    // uploaded as empty files. (Uploading a folder would mean walking it and
+    // creating directories server-side — a different feature.)
+    filesFromDrop(dt) {
+      if (!dt) return [];
+      const items = Array.from(dt.items || []);
+      if (!items.length || typeof items[0].webkitGetAsEntry !== 'function') {
+        return Array.from(dt.files || []);
+      }
+      const files = [];
+      let skipped = 0;
+      for (const item of items) {
+        if (item.kind !== 'file') continue;
+        let entry = null;
+        try { entry = item.webkitGetAsEntry(); } catch (_) { /* older engine */ }
+        if (entry && entry.isDirectory) { skipped++; continue; }
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+      if (skipped) toast(`Skipped ${skipped} folder${skipped > 1 ? 's' : ''} — only files can be uploaded`, true);
+      return files;
+    }
+
+    // Upload files into the directory currently on screen, one request each.
+    // Sequential on purpose: the body of each request is the whole file, so N in
+    // flight is N files resident in memory on both ends.
+    async uploadFiles(files) {
+      const list = Array.from(files || []);
+      if (!list.length) return;
+      if (!this.currentPath) { toast('Open a folder first', true); return; }
+
+      const dir = this.currentPath;
+      const headers = (window.authManager && window.authManager.getAuthHeaders) ? window.authManager.getAuthHeaders() : {};
+      let ok = 0;
+      const failed = [];
+
+      for (const file of list) {
+        try {
+          const url = '/api/fs/upload?path=' + encodeURIComponent(dir) + '&name=' + encodeURIComponent(file.name);
+          const res = await fetch(url, { method: 'POST', headers, body: file });
+          if (res.ok) { ok++; continue; }
+          const data = await res.json().catch(() => ({}));
+          failed.push(`${file.name}: ${data.message || data.error || 'HTTP ' + res.status}`);
+        } catch (_) {
+          failed.push(`${file.name}: upload failed`);
+        }
+      }
+
+      // Name the failures — "2 of 3 uploaded" without saying which two is a
+      // message you have to go and check by hand anyway.
+      if (failed.length === 1) toast(failed[0], true);
+      else if (failed.length) toast(`${failed.length} of ${list.length} failed — ${failed.join('; ')}`, true);
+      if (ok) toast(`Uploaded ${ok} file${ok > 1 ? 's' : ''}`);
+
+      // Refresh even when everything failed: the directory may have changed for
+      // other reasons while the uploads were in flight.
+      if (dir === this.currentPath) await this.load(dir);
+    }
+
     // Save a file. Goes through a single-use ticket rather than the auth-token
     // URL, because a download URL is recorded in the browser's download history
     // and its download manager — longer-lived than a tab — so whatever is left
     // there must already be spent.
     async downloadFile(filePath) {
       const name = String(filePath).split('/').filter(Boolean).pop() || 'file';
-      const toast = (msg, err) => { try { window.app && window.app.showToast(msg, err); } catch (_) {} };
       if (!(window.authManager && window.authManager.getFileTicket)) {
         toast('Download is unavailable', true);
         return;
