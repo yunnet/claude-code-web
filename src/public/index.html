@@ -242,7 +242,7 @@
                     </div>
                     <div class="setting-group setting-group-block">
                         <label for="scrollbackChunks">Scrollback kept:</label>
-                        <p class="setting-hint" id="scrollbackHint">How much terminal history survives a restart or a reconnect. Counted in <em>chunks</em> (one read off the terminal), not lines &mdash; a chunk has no fixed size, so this is a budget rather than an exact number of lines. Applies to <strong>all sessions</strong>, and higher values mean larger session files.</p>
+                        <p class="setting-hint" id="scrollbackHint">How much terminal history survives a restart or a reconnect. Counted in <em>chunks</em> (one read off the terminal), not lines &mdash; a chunk has no fixed size, so this is a budget rather than an exact number of lines. Applies to <strong>all sessions</strong>, and higher values mean larger session files. Very large values are kept in full but replayed up to a size limit on reconnect, so the terminal stays quick to reattach.</p>
                         <div class="scrollback-row">
                             <input type="number" id="scrollbackChunks" min="50" max="5000" step="50" value="500">
                             <span class="setting-unit">chunks</span>

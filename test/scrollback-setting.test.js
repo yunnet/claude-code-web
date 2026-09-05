@@ -103,6 +103,95 @@ describe('scrollback chunk setting', function () {
     assert.ok(session.maxBufferSize >= 4000, `live session cap ${session.maxBufferSize} < 4000`);
   });
 
+  it('bounds the replay by bytes, not just by chunk count', async function () {
+    // The chunk cap alone let the reconnect payload scale to ~1.75 MB at the
+    // maximum setting (measured against real sessions), from 89 KB before this
+    // feature. joinClaudeSession runs on EVERY reconnect, for every device on
+    // the session, and serialises on the shared event loop.
+    const sent = [];
+    server.setScrollbackChunks(5000);
+    const fat = Array.from({ length: 5000 }, (_, i) => `${i}:${'x'.repeat(400)}\r\n`);
+    server.claudeSessions.set(SESSION_ID, fakeSession(fat));
+    server.webSocketConnections.set('ws1', { ws: {}, claudeSessionId: null });
+    server.sendToWebSocket = (_ws, msg) => sent.push(msg);
+
+    await server.joinClaudeSession('ws1', SESSION_ID);
+
+    const replay = sent.find((m) => m.type === 'session_joined').outputBuffer;
+    const bytes = replay.reduce((n, c) => n + Buffer.byteLength(c), 0);
+    assert.ok(bytes <= ClaudeCodeWebServer.SCROLLBACK_REPLAY_MAX_BYTES,
+      `replay is ${bytes} bytes, over the ${ClaudeCodeWebServer.SCROLLBACK_REPLAY_MAX_BYTES} ceiling`);
+    assert.ok(replay.length < 5000, 'the byte ceiling should have bound before the chunk cap');
+    // Still the NEWEST output: a ceiling that kept the head would be worse than
+    // no ceiling at all.
+    assert.strictEqual(replay[replay.length - 1], fat[4999]);
+  });
+
+  it('lets the chunk cap bind when the payload is small', async function () {
+    const sent = [];
+    server.setScrollbackChunks(300);
+    server.claudeSessions.set(SESSION_ID, fakeSession(chunks(600)));
+    server.webSocketConnections.set('ws1', { ws: {}, claudeSessionId: null });
+    server.sendToWebSocket = (_ws, msg) => sent.push(msg);
+
+    await server.joinClaudeSession('ws1', SESSION_ID);
+
+    const replay = sent.find((m) => m.type === 'session_joined').outputBuffer;
+    assert.strictEqual(replay.length, 300, 'small chunks: the count is what should bind');
+  });
+
+  it('still sends a single chunk that is bigger than the whole ceiling', async function () {
+    // Truncating to nothing would turn one huge burst of output into a blank
+    // terminal, which is the failure the ceiling is supposed to prevent.
+    const sent = [];
+    const huge = 'y'.repeat(ClaudeCodeWebServer.SCROLLBACK_REPLAY_MAX_BYTES * 2);
+    server.claudeSessions.set(SESSION_ID, fakeSession([huge]));
+    server.webSocketConnections.set('ws1', { ws: {}, claudeSessionId: null });
+    server.sendToWebSocket = (_ws, msg) => sent.push(msg);
+
+    await server.joinClaudeSession('ws1', SESSION_ID);
+
+    const replay = sent.find((m) => m.type === 'session_joined').outputBuffer;
+    assert.strictEqual(replay.length, 1);
+  });
+
+  it('does not change the live value when the write fails', function () {
+    // Applying first and persisting second left the running server on the new
+    // value while the caller was told it had failed — a disagreement that only
+    // showed up at the next restart.
+    const before = server.sessionStore.maxOutputChunks;
+    fs.chmodSync(dataDir, 0o555);
+    try {
+      const res = mockRes();
+      server.setScrollback({ body: { chunks: 2000 } }, res);
+      assert.strictEqual(res.statusCode, 500);
+      assert.strictEqual(server.sessionStore.maxOutputChunks, before,
+        'a rejected save must not have moved the running value');
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
+  it('writes the settings file atomically and leaves no temp behind', function () {
+    const res = mockRes();
+    server.setScrollback({ body: { chunks: 900 } }, res);
+    assert.strictEqual(res.statusCode, 200);
+    const strays = fs.readdirSync(dataDir).filter((f) => f.includes('.tmp'));
+    assert.deepStrictEqual(strays, [], `left temp files: ${strays}`);
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'scrollback.json'), 'utf8')).chunks, 900);
+  });
+
+  it('resolves both data-dir files from the store, so a redirect moves both', function () {
+    // Two independent copies of "where is the data dir" is how a test once
+    // migrated the live instance's sessions (see session-store.js). Reading the
+    // env var in each place looks equivalent until something moves storageDir —
+    // then the files scatter, which is exactly what that comment warns about.
+    const moved = path.join(dataDir, 'moved');
+    server.sessionStore.storageDir = moved;
+    assert.strictEqual(path.dirname(server.scrollbackFile()), moved);
+    assert.strictEqual(path.dirname(server.planDirsFile()), moved);
+  });
+
   it('clamps out-of-range values instead of rejecting them', function () {
     for (const [input, expected] of [[0, 50], [-5, 50], [10, 50], [99999, 5000]]) {
       const res = mockRes();

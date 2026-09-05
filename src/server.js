@@ -34,6 +34,13 @@ class ClaudeCodeWebServer {
     // Runtime-editable list of extra plan directories. A persisted list (edited
     // via /api/plan-dirs) takes precedence; otherwise seed from --plans-dir.
     const seededPlanDirs = (options.planDirs || []).map((p) => path.resolve(p));
+    // Constructed before the plan dirs are read: it owns `storageDir`, which is
+    // now the single answer to "where is the data dir" for every file we keep
+    // there (see dataDirFile).
+    this.sessionStore = new SessionStore();
+    // Scrollback depth is a user setting (Settings panel → /api/settings/scrollback).
+    // Applied to the store immediately so the very first autosave already honours it.
+    this.sessionStore.maxOutputChunks = this.loadScrollbackChunks();
     const persistedPlanDirs = this.loadPlanDirs();
     this.planDirs = persistedPlanDirs !== null ? persistedPlanDirs : seededPlanDirs;
     this.app = express();
@@ -44,10 +51,6 @@ class ClaudeCodeWebServer {
     // long-lived auth token in a URL the rendered page can read back.
     this.fileTickets = new Map();
     this.claudeBridge = new ClaudeBridge();
-    this.sessionStore = new SessionStore();
-    // Scrollback depth is a user setting (Settings panel → /api/settings/scrollback).
-    // Applied to the store immediately so the very first autosave already honours it.
-    this.sessionStore.maxOutputChunks = this.loadScrollbackChunks();
     this.autoSaveInterval = null;
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
@@ -1147,10 +1150,11 @@ class ClaudeCodeWebServer {
       sessionName: session.name,
       workingDir: session.workingDir,
       active: session.active,
-      // Replay depth follows the same setting as persistence. It used to be a
+      // Replay depth follows the same setting as persistence — it used to be a
       // separate hard-coded 200, which meant raising the persist cap changed
-      // nothing the browser could actually show.
-      outputBuffer: session.outputBuffer.slice(-this.sessionStore.maxOutputChunks)
+      // nothing the browser could actually show — but bounded by bytes as well,
+      // since this message is sent on every reconnect. See replaySlice.
+      outputBuffer: this.replaySlice(session.outputBuffer)
     });
 
     if (this.dev) {
@@ -1921,11 +1925,16 @@ class ClaudeCodeWebServer {
 
   // Where the runtime plan-dirs list is persisted — same data dir as SessionStore
   // (CCW_DATA_DIR override, else ~/.claude-code-web), so it survives restarts.
+  // Every file we keep beside the sessions resolves through here, so there is
+  // one answer to "where is the data dir" rather than a copy per caller. It
+  // reads the store's own storageDir: session-store.js:70 records what happened
+  // the last time two places disagreed about that path.
+  dataDirFile(name) {
+    return path.join(this.sessionStore.storageDir, name);
+  }
+
   planDirsFile() {
-    const base = process.env.CCW_DATA_DIR
-      ? path.resolve(process.env.CCW_DATA_DIR)
-      : path.join(require('os').homedir(), '.claude-code-web');
-    return path.join(base, 'plan-dirs.json');
+    return this.dataDirFile('plan-dirs.json');
   }
 
   // Load the persisted plan dirs, or null if none/invalid (caller then seeds from
@@ -1952,11 +1961,20 @@ class ClaudeCodeWebServer {
   static SCROLLBACK_MIN = 50;
   static SCROLLBACK_MAX = 5000;
 
+  // A second, independent ceiling on what a RECONNECT sends. The chunk cap alone
+  // is the wrong unit here: measured against real sessions, 5000 chunks is a
+  // ~1.75 MB JSON message, and joinClaudeSession runs on every reconnect, for
+  // every device attached to the session, serialising on the shared event loop.
+  // (The old hard-coded 200 was ~89 KB.)
+  //
+  // 512 KB is chosen so the DEFAULT setting is untouched — 500 chunks measures
+  // ~180 KB — and only the deliberately large settings feel it. Raising the
+  // setting still buys more replay, just not without limit. What is persisted is
+  // unaffected: this bounds delivery, not storage.
+  static SCROLLBACK_REPLAY_MAX_BYTES = 512 * 1024;
+
   scrollbackFile() {
-    const base = process.env.CCW_DATA_DIR
-      ? path.resolve(process.env.CCW_DATA_DIR)
-      : path.join(require('os').homedir(), '.claude-code-web');
-    return path.join(base, 'scrollback.json');
+    return this.dataDirFile('scrollback.json');
   }
 
   // The persisted value, or the default if there is no file, it is corrupt, or
@@ -1974,6 +1992,28 @@ class ClaudeCodeWebServer {
   static clampScrollback(n) {
     return Math.min(ClaudeCodeWebServer.SCROLLBACK_MAX,
                     Math.max(ClaudeCodeWebServer.SCROLLBACK_MIN, n));
+  }
+
+  // The tail of a session's buffer to replay on join: at most the configured
+  // chunk count, and at most SCROLLBACK_REPLAY_MAX_BYTES of it. Walks back from
+  // the newest, because the newest is what someone reconnecting wants to see.
+  // Always yields at least one chunk — a single burst larger than the whole
+  // ceiling should arrive truncated-by-count, not as a blank terminal.
+  replaySlice(buffer) {
+    if (!Array.isArray(buffer) || buffer.length === 0) return [];
+    const maxChunks = this.sessionStore.maxOutputChunks;
+    const limit = ClaudeCodeWebServer.SCROLLBACK_REPLAY_MAX_BYTES;
+    let bytes = 0;
+    let start = buffer.length;
+    while (start > 0 && buffer.length - start < maxChunks) {
+      const size = Buffer.byteLength(String(buffer[start - 1]));
+      // `start < buffer.length` is the "unless it is the first one" clause: the
+      // newest chunk is taken even if it alone busts the ceiling.
+      if (bytes + size > limit && start < buffer.length) break;
+      bytes += size;
+      start--;
+    }
+    return buffer.slice(start);
   }
 
   // The in-memory cap. Never below the old 1000, and never below what we intend
@@ -2013,14 +2053,25 @@ class ClaudeCodeWebServer {
     if (!Number.isInteger(chunks)) {
       return res.status(400).json({ error: 'chunks must be a whole number' });
     }
-    const value = this.setScrollbackChunks(chunks);
+    const value = ClaudeCodeWebServer.clampScrollback(chunks);
+    // Persist BEFORE applying. The other order left the running server on the
+    // new value while the caller was told the save had failed — a disagreement
+    // that stayed invisible until the next restart put the old value back.
+    const target = this.scrollbackFile();
+    // Temp name carries the pid so two writers cannot clobber each other's
+    // partial write, then rename makes the swap atomic for readers — the same
+    // reasoning, and the same shape, as SessionStore.writeOne.
+    const tmp = `${target}.${process.pid}.tmp`;
     try {
-      fs.mkdirSync(path.dirname(this.scrollbackFile()), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(this.scrollbackFile(), JSON.stringify({ chunks: value }, null, 2));
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(tmp, JSON.stringify({ chunks: value }, null, 2));
+      fs.renameSync(tmp, target);
     } catch (error) {
+      try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean up */ }
       if (this.dev) console.error('Failed to persist scrollback setting:', error.message);
       return res.status(500).json({ error: 'Could not save the setting', message: error.message });
     }
+    this.setScrollbackChunks(value);
     res.json({ chunks: value });
   }
 
