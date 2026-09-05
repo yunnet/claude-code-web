@@ -20,15 +20,21 @@
 //      brightWhite (#8c959f, 3.04:1) and brightBlue (#218bff, 3.39:1) ended up
 //      washing out the parts of a reply Claude draws with them.
 //
-//   2. ANSI 7 is DOUBLE-BOOKED and must serve both jobs. Claude rules the input
-//      box with it as a foreground, and paints the band behind your own echoed
-//      message (and its "Jump to bottom" pill) with it as a background, ANSI 0
-//      on top. Those pull opposite ways — dark enough to draw a hairline on
-//      white, light enough to read black on — and the product of the two ratios
-//      is fixed at contrast(ANSI 0, white). So ANSI 7 is a mid grey that splits
-//      the difference (3.73:1 as a rule, 5.07:1 under ANSI 0), and ANSI 0 is a
-//      near-black rather than a soft one, which buys both sides room. Tuning
-//      ANSI 7 for the rules alone is what made the message band unreadable.
+//   2. ANSI 7 is DOUBLE-BOOKED, and no single value can serve both jobs. Claude
+//      rules the input box and the status line with it as a FOREGROUND, and
+//      paints the band behind your own echoed message with it as a BACKGROUND,
+//      ANSI 0 on top. Those pull opposite ways, and worse, the two ratios are
+//      locked together: contrast(7,bg) x contrast(0,7) == contrast(0,bg), a
+//      constant. Splitting the difference gives both jobs a mediocre value —
+//      that was tried at 4.55:1 and again at 3.73:1, and the rules read as
+//      invisible both times. Hairlines need far more contrast than text does.
+//
+//      `minimumContrastRatio` is the way out, because it works on the RENDERED
+//      PAIR rather than on the palette: xterm adjusts a foreground that lands
+//      too close to whatever is actually behind it. So ANSI 7 is now set dark
+//      enough for the rules (6.39:1), and the band it also paints is rescued at
+//      draw time — the ANSI 0 on top of it gets lightened automatically.
+//      Verified in the browser, not just in a contrast formula.
 //
 //   3. Everything else clears 4.5:1 on white, and the greys stay in order
 //      (0 darkest, then 8, then 7) so Claude's loud/normal/quiet still reads.
@@ -46,8 +52,8 @@ function getTerminalTheme() {
             selectionBackground: 'rgba(9, 105, 218, 0.20)',
             selectionForeground: '#ffffff',
             black: '#0d1117', red: '#cf222e', green: '#116329', yellow: '#9a6700',
-            blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#7d8590',
-            brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#0a4d20', brightYellow: '#633c01',
+            blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#57606a',
+            brightBlack: '#424a53', brightRed: '#a40e26', brightGreen: '#0a4d20', brightYellow: '#633c01',
             brightBlue: '#0550ae', brightMagenta: '#6639ba', brightCyan: '#0f6674', brightWhite: '#656d76'
         };
     }
@@ -64,6 +70,26 @@ function getTerminalTheme() {
         brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#ffdf5d',
         brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#a5f3fc', brightWhite: '#f0f6fc'
     };
+}
+
+// Light mode only. Claude double-books ANSI 7 as both a hairline foreground and
+// a band background (see rule 2 above), so some pairs can only be fixed where
+// the pair is known — at draw time. 4.5 is enough to rescue ANSI 0 on ANSI 7
+// (2.96:1 raw) while leaving every other pair in the palette untouched, since
+// they all already clear it. Dark stays off: nothing there is short of contrast,
+// and switching it on would silently repaint a theme nobody complained about.
+const LIGHT_MIN_CONTRAST_RATIO = 4.5;
+
+function getTerminalContrast() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? LIGHT_MIN_CONTRAST_RATIO : 1;
+}
+
+// Always set these two together — the palette assumes the correction is on, so a
+// terminal that got one without the other is the bug this function prevents.
+function applyTerminalPalette(term) {
+    if (!term) return;
+    term.options.theme = getTerminalTheme();
+    term.options.minimumContrastRatio = getTerminalContrast();
 }
 
 // Make development-plan paths (…/.claude/plans/*.md) in terminal output clickable.
@@ -158,7 +184,8 @@ class Split {
                 : (this.app?.loadSettings?.().smoothScrollDuration ?? 100),
             fastScrollModifier: 'shift',
             fastScrollSensitivity: 5,
-            theme: this.app?.terminal?.options?.theme || getTerminalTheme()
+            theme: this.app?.terminal?.options?.theme || getTerminalTheme(),
+            minimumContrastRatio: getTerminalContrast()
         });
         
         this.fitAddon = new FitAddon.FitAddon();

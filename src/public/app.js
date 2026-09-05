@@ -313,6 +313,10 @@ class ClaudeCodeWebInterface {
             // synchronously in <head>, so the terminal matches the UI theme. The
             // dark palette is identical to the original hardcoded one.
             theme: getTerminalTheme(),
+            // Paired with the palette on purpose — see applyTerminalPalette in
+            // splits.js. Light mode needs it because Claude uses ANSI 7 as both a
+            // hairline colour and a band background.
+            minimumContrastRatio: getTerminalContrast(),
             allowProposedApi: true,
             scrollback: 10000,
             rightClickSelectsWord: false,
@@ -1886,13 +1890,13 @@ class ClaudeCodeWebInterface {
         } else {
             document.documentElement.removeAttribute('data-theme');
         }
-        const t = (typeof getTerminalTheme === 'function') ? getTerminalTheme() : null;
-        if (t) {
-            this.terminal.options.theme = t;
+        if (typeof applyTerminalPalette === 'function') {
+            // Sets the palette AND the minimum-contrast correction the palette
+            // depends on; assigning options.theme alone would leave light mode's
+            // message band unreadable.
+            applyTerminalPalette(this.terminal);
             if (this.splitContainer && this.splitContainer.splits) {
-                this.splitContainer.splits.forEach((sp) => {
-                    if (sp && sp.terminal) sp.terminal.options.theme = t;
-                });
+                this.splitContainer.splits.forEach((sp) => applyTerminalPalette(sp && sp.terminal));
             }
         }
     }

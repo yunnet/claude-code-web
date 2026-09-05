@@ -66,18 +66,45 @@ describe('light theme contrast', function () {
     assert.deepStrictEqual(weak, [], weak.map((c) => `${c.n} ${c.hex} ${c.r.toFixed(2)}:1`).join(', '));
   });
 
-  it('makes ANSI 7 work as a rule AND as the band behind your message', function () {
-    // Claude draws the input box rules with ANSI 7 as a foreground, and the band
-    // behind your echoed message (plus its "Jump to bottom" pill) with ANSI 7 as
-    // a background carrying ANSI 0. Both thresholds have to hold at once, and
-    // they pull against each other — the product of the two ratios is exactly
-    // contrast(ANSI 0, white), so this is a genuine trade, not an oversight.
-    // Tuning ANSI 7 dark for the rules alone is what made the band unreadable.
+  it('holds ANSI 7 dark enough to draw a hairline', function () {
+    // Claude rules the input box and the status line with ANSI 7 as a foreground.
+    // A 1px box-drawing glyph reads far fainter than text at the same ratio: this
+    // was reported invisible at 4.55:1 and again at 3.73:1, so the text threshold
+    // is not the bar here. The band ANSI 7 also paints is handled below.
+    const r = contrast(lightPalette().white, WHITE);
+    assert.ok(r >= 6, `ANSI 7 is ${r.toFixed(2)}:1 on white, want >= 6`);
+  });
+
+  it('turns on the per-pair correction the dark ANSI 7 depends on', function () {
+    // ANSI 7 is double-booked: a foreground for the rules, a background for the
+    // band behind your echoed message (ANSI 0 on top). The two ratios multiply to
+    // contrast(ANSI 0, white), a constant — so no single value serves both, and
+    // splitting the difference is what failed twice. minimumContrastRatio fixes
+    // the pair at draw time instead, which is what lets ANSI 7 be dark at all.
+    // Without it, the band would render at 2.96:1.
     const p = lightPalette();
-    const rule = contrast(p.white, WHITE);
     const band = contrast(p.black, p.white);
-    assert.ok(rule >= 3, `ANSI 7 rules the input box at ${rule.toFixed(2)}:1 on white, want >= 3`);
-    assert.ok(band >= 4.5, `ANSI 0 on ANSI 7 is ${band.toFixed(2)}:1, want >= 4.5`);
+    assert.ok(band < 4.5, `band is ${band.toFixed(2)}:1 — if it now clears 4.5 on its own, this guard is stale`);
+
+    const m = /const LIGHT_MIN_CONTRAST_RATIO = ([\d.]+)/.exec(SPLITS);
+    assert.ok(m, 'LIGHT_MIN_CONTRAST_RATIO is gone — the palette assumes it exists');
+    assert.ok(Number(m[1]) >= 4.5, `minimum contrast is ${m[1]}, want >= 4.5`);
+    // Light gets the correction, dark deliberately does not.
+    assert.ok(/data-theme'\) === 'light' \? LIGHT_MIN_CONTRAST_RATIO : 1/.test(SPLITS),
+      'getTerminalContrast should apply the correction to light only');
+  });
+
+  it('never sets a terminal palette without the correction beside it', function () {
+    // The palette is only safe because the correction is on. Any site that
+    // assigns options.theme by hand would reintroduce the unreadable band, so
+    // theme assignment goes through applyTerminalPalette and nowhere else.
+    const APP = read('src', 'public', 'app.js');
+    for (const [name, src] of [['splits.js', SPLITS], ['app.js', APP]]) {
+      const strays = (src.match(/\.options\.theme\s*=/g) || []).length;
+      const inHelper = /function applyTerminalPalette\([^)]*\)\s*\{[^}]*\.options\.theme\s*=/.test(src) ? 1 : 0;
+      assert.strictEqual(strays, inHelper,
+        `${name} assigns options.theme outside applyTerminalPalette (${strays} assignment(s), ${inHelper} in the helper)`);
+    }
   });
 
   it('makes bright* darker than its base, the way a light background needs', function () {
