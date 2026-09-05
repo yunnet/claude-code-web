@@ -333,8 +333,9 @@ class ClaudeBridge {
   // is 2.85:1 on our white canvas — effectively invisible, and nothing on our
   // side can lift it (white is already the highest-contrast light background for
   // that grey). The `-ansi` variant draws the same chrome in ANSI colours, which
-  // come from OUR palette, so contrast is ours to guarantee (ANSI 7 = #6e7781,
-  // 4.49:1). Dark needs no such help, so it keeps the richer truecolor theme.
+  // come from OUR palette, so contrast is ours to guarantee — see the light
+  // palette in src/public/splits.js, where ANSI 7 (the input box rules) is held
+  // at 6.39:1. Dark needs no such help, so it keeps the richer truecolor theme.
   static themeForUi(uiTheme) {
     return uiTheme === 'light' ? 'light-ansi' : 'dark';
   }
