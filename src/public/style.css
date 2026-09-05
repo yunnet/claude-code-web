@@ -2793,3 +2793,37 @@ body.overlay-open .settings-modal       { z-index: 5004; }
 .folder-list.drag-over .folder-item {
     pointer-events: none;
 }
+
+/* ---------------------------------------------------------------------------
+   Scrollback depth setting (#scrollbackChunks)
+
+   Self-contained, like the blocks above and for the same reason: splicing
+   selectors into an existing list is how #explorerBtn svg ended up inside a
+   display:none rule and the folder icon vanished (dbaf5ab).
+   --------------------------------------------------------------------------- */
+
+.scrollback-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#scrollbackChunks {
+    width: 110px;
+    padding: 6px 8px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font: inherit;
+}
+
+#scrollbackChunks:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.setting-unit {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
