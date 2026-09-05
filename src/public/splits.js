@@ -8,6 +8,30 @@
 // its own background via this JS theme (not CSS), so without this the terminal
 // stayed dark in light mode. The light palette is tuned to read on white
 // (GitHub-Light-style ANSI colors); the dark palette matches the previous one.
+//
+// The light palette is not decoration: Claude runs under the `light-ansi` theme
+// (see ClaudeBridge.themeForUi), which draws its whole chrome in ANSI colours,
+// so these sixteen values ARE the contrast of the input box rules, the status
+// line and every line of a reply. Three rules keep it readable, all checked by
+// test/light-contrast.test.js:
+//
+//   1. On a light background `bright*` means DARKER than its base, not lighter.
+//      The inherited palette had it the dark-terminal way round, which is how
+//      brightWhite (#8c959f, 3.04:1) and brightBlue (#218bff, 3.39:1) ended up
+//      washing out the parts of a reply Claude draws with them.
+//
+//   2. ANSI 7 is DOUBLE-BOOKED and must serve both jobs. Claude rules the input
+//      box with it as a foreground, and paints the band behind your own echoed
+//      message (and its "Jump to bottom" pill) with it as a background, ANSI 0
+//      on top. Those pull opposite ways — dark enough to draw a hairline on
+//      white, light enough to read black on — and the product of the two ratios
+//      is fixed at contrast(ANSI 0, white). So ANSI 7 is a mid grey that splits
+//      the difference (3.73:1 as a rule, 5.07:1 under ANSI 0), and ANSI 0 is a
+//      near-black rather than a soft one, which buys both sides room. Tuning
+//      ANSI 7 for the rules alone is what made the message band unreadable.
+//
+//   3. Everything else clears 4.5:1 on white, and the greys stay in order
+//      (0 darkest, then 8, then 7) so Claude's loud/normal/quiet still reads.
 function getTerminalTheme() {
     const isLight = document.documentElement.getAttribute('data-theme') === 'light';
     if (isLight) {
@@ -21,10 +45,10 @@ function getTerminalTheme() {
             cursorAccent: '#ffffff',
             selectionBackground: 'rgba(9, 105, 218, 0.20)',
             selectionForeground: '#ffffff',
-            black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#9a6700',
-            blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
-            brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#633c01',
-            brightBlue: '#218bff', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f'
+            black: '#0d1117', red: '#cf222e', green: '#116329', yellow: '#9a6700',
+            blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#7d8590',
+            brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#0a4d20', brightYellow: '#633c01',
+            brightBlue: '#0550ae', brightMagenta: '#6639ba', brightCyan: '#0f6674', brightWhite: '#656d76'
         };
     }
     // Dark palette — identical to the original main-terminal theme (solid bg).

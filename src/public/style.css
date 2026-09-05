@@ -26,8 +26,12 @@
     --success: #0f7b5c;
     --error: #d92d20;
     --warning: #a16207;
-    --border: #e6e7eb;
-    --border-hover: #d4d6db;
+    /* Light borders carry more of the layout than dark ones do: a session tab
+       is #f3f4f6 on a #ffffff bar (1.10:1), so the 1px outline is the only
+       thing that makes it a tab. The old #e6e7eb sat at 1.24:1 on white and
+       disappeared, taking the tab shapes and the panel dividers with it. */
+    --border: #d0d7de;
+    --border-hover: #afb8c1;
     --fab-ink: #ffffff;
 }
 
