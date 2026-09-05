@@ -396,6 +396,16 @@
                             </svg>
                         </button>
                         <input type="text" class="folder-path-input" id="explorerPathInput" placeholder="Type a path and press Enter" spellcheck="false" autocomplete="off">
+                        <button class="btn-icon" id="explorerUploadBtn" title="Upload files to this folder">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 19V7"/>
+                                <path d="M8 11l4-4 4 4"/>
+                                <path d="M5 3h14"/>
+                            </svg>
+                        </button>
+                        <!-- The button opens this; a file input styled to look like
+                             the others would fight the browser's native chrome. -->
+                        <input type="file" id="explorerFileInput" multiple hidden>
                     </div>
                     <div class="folder-list-container">
                         <div class="folder-list" id="explorerList">

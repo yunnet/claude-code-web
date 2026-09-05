@@ -2764,3 +2764,32 @@ body.overlay-open .settings-modal       { z-index: 5004; }
 
 [data-theme="light"] .branch-ref.pull-ok  { color: #1a7f37; }
 [data-theme="light"] .branch-ref.pull-bad { color: #c4232f; }
+
+/* ---------------------------------------------------------------------------
+   File explorer upload (#explorerUploadBtn, .folder-list.drag-over)
+
+   Self-contained, like the .row-pull block above and for the same reason:
+   splicing selectors into an existing list is how #explorerBtn svg ended up
+   inside a display:none rule and the folder icon vanished (dbaf5ab).
+
+   Every colour here is one of the existing semantic variables, so the drop
+   target follows the light/dark theme without a second set of rules.
+   --------------------------------------------------------------------------- */
+
+#explorerUploadBtn {
+    flex: 0 0 auto;
+}
+
+/* The listing is the drop target, so it has to read as one the moment a file is
+   over it — an inset ring rather than a border, which would reflow every row. */
+.folder-list.drag-over {
+    box-shadow: inset 0 0 0 2px var(--accent);
+    border-radius: 6px;
+    background-color: var(--bg-tertiary);
+}
+
+/* Rows must not eat the dragover/drop events on their way to the list, or the
+   highlight flickers as the pointer crosses each one. */
+.folder-list.drag-over .folder-item {
+    pointer-events: none;
+}

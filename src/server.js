@@ -712,6 +712,15 @@ class ClaudeCodeWebServer {
     // page can read out of its own location — and it is dead on arrival.
     this.app.post('/api/fs/ticket', (req, res) => this.createFileTicket(req, res));
 
+    // Upload one file into the directory the explorer is showing. Route-scoped
+    // express.raw parses the body (same trick as /api/upload-image) so the global
+    // express.json() is untouched. Registered after the auth middleware, so this
+    // is normal header auth — unlike /api/fs/file, an upload is a fetch and can
+    // carry an Authorization header, so it needs no browser-nav token exception.
+    this.app.post('/api/fs/upload',
+      express.raw({ type: '*/*', limit: '50mb' }),
+      (req, res) => this.uploadFile(req, res));
+
     // Current branch of every git repository one level under a directory — the
     // "many sub-projects in one big directory" layout. Read-only, header auth,
     // and NOT on a timer: it runs only when the panel is opened or refreshed.
@@ -1639,6 +1648,64 @@ class ClaudeCodeWebServer {
       const status = error && error.code === 'ENOENT' ? 404 : 403;
       res.status(status).json({ error: 'Cannot access directory', message: error.message });
     }
+  }
+
+  // POST /api/fs/upload?path=<dir>&name=<file> — write one uploaded file into the
+  // directory the explorer is currently showing. The body is the raw bytes; the
+  // route-scoped express.raw that parses it is registered with the route, the way
+  // /api/upload-image does it, so the global express.json() stays untouched and no
+  // multipart parser has to join the dependency list. One file per request: the
+  // client loops, which costs a request each but lets every file fail on its own.
+  //
+  // The directory is deliberately as unrestricted as browsing is (validatePath →
+  // isPathWithinBase: any resolvable path, this being a local single-user tool).
+  // That makes the FILENAME the thing that keeps the write where you can see it:
+  // it must be a bare basename, so `name=../../.bashrc` cannot reach past the
+  // directory on screen no matter which directory that is.
+  uploadFile(req, res) {
+    const query = req.query || {};
+    const validation = this.validatePath(query.path);
+    if (!validation.valid) {
+      return res.status(403).json({ error: validation.error, message: 'Uploading to this directory is not allowed' });
+    }
+    const dir = validation.path;
+
+    const name = typeof query.name === 'string' ? query.name : '';
+    // Not a sanitiser: a name that is not already its own basename is rejected
+    // rather than trimmed, so nothing lands under a name the user did not pick.
+    if (!name || name !== path.basename(name) || name === '.' || name === '..') {
+      return res.status(400).json({ error: 'Invalid file name', message: 'The file name must not contain a path' });
+    }
+
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'Empty upload body' });
+    }
+
+    try {
+      if (!fs.statSync(dir).isDirectory()) {
+        return res.status(404).json({ error: 'Not a directory', message: 'Upload target is not a directory' });
+      }
+    } catch (error) {
+      return res.status(404).json({ error: 'Directory not found', message: error.message });
+    }
+
+    const target = path.join(dir, name);
+    try {
+      // 'wx' is O_EXCL: the kernel refuses the write if the name is taken, so an
+      // existing file cannot be clobbered by a request that raced a stat check.
+      fs.writeFileSync(target, req.body, { flag: 'wx' });
+    } catch (error) {
+      if (error && error.code === 'EEXIST') {
+        // Deliberately does not name the file: the client prefixes every failure
+        // with it, and a message that repeats it reads "a.txt: a.txt is already…".
+        return res.status(409).json({ error: 'File already exists', message: 'A file with this name is already in this folder' });
+      }
+      if (this.dev) console.error('Upload failed:', error.message);
+      const status = error && (error.code === 'EACCES' || error.code === 'EPERM') ? 403 : 500;
+      return res.status(status).json({ error: 'Upload failed', message: error.message });
+    }
+
+    return res.json({ path: target, name, size: req.body.length });
   }
 
   // GET /api/fs/file/:token/:file — serve a file's bytes so the explorer can open
