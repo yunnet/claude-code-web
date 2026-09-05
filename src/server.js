@@ -45,6 +45,9 @@ class ClaudeCodeWebServer {
     this.fileTickets = new Map();
     this.claudeBridge = new ClaudeBridge();
     this.sessionStore = new SessionStore();
+    // Scrollback depth is a user setting (Settings panel → /api/settings/scrollback).
+    // Applied to the store immediately so the very first autosave already honours it.
+    this.sessionStore.maxOutputChunks = this.loadScrollbackChunks();
     this.autoSaveInterval = null;
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
@@ -466,7 +469,7 @@ class ClaudeCodeWebServer {
         pausedConnections: new Set(),
         flowResumeTimer: null,
         outputBuffer: [],
-        maxBufferSize: 1000
+        maxBufferSize: this.maxBufferSize()
       };
       
       this.claudeSessions.set(sessionId, session);
@@ -740,6 +743,12 @@ class ClaudeCodeWebServer {
     // after validating each entry is a real existing directory, and persists it.
     this.app.get('/api/plan-dirs', (req, res) => this.getPlanDirs(req, res));
     this.app.post('/api/plan-dirs', (req, res) => this.setPlanDirs(req, res));
+
+    // How many chunks of terminal scrollback are kept: persisted, replayed on
+    // reconnect, and held in memory. Global rather than per session — it is a
+    // disk and WebSocket budget, not a per-project preference.
+    this.app.get('/api/settings/scrollback', (req, res) => this.getScrollback(req, res));
+    this.app.post('/api/settings/scrollback', (req, res) => this.setScrollback(req, res));
 
     this.app.post('/api/set-working-dir', (req, res) => {
       const { path: selectedPath } = req.body;
@@ -1090,7 +1099,7 @@ class ClaudeCodeWebServer {
       pausedConnections: new Set(),
       flowResumeTimer: null,
       outputBuffer: [],
-      maxBufferSize: 1000
+      maxBufferSize: this.maxBufferSize()
     };
     
     this.claudeSessions.set(sessionId, session);
@@ -1138,7 +1147,10 @@ class ClaudeCodeWebServer {
       sessionName: session.name,
       workingDir: session.workingDir,
       active: session.active,
-      outputBuffer: session.outputBuffer.slice(-200) // Send last 200 lines
+      // Replay depth follows the same setting as persistence. It used to be a
+      // separate hard-coded 200, which meant raising the persist cap changed
+      // nothing the browser could actually show.
+      outputBuffer: session.outputBuffer.slice(-this.sessionStore.maxOutputChunks)
     });
 
     if (this.dev) {
@@ -1924,6 +1936,92 @@ class ClaudeCodeWebServer {
       if (Array.isArray(arr)) return arr.filter((x) => typeof x === 'string').map((p) => path.resolve(p));
     } catch (_) { /* no file / invalid → fall back to the flag seed */ }
     return null;
+  }
+
+  // --- Scrollback depth -----------------------------------------------------
+  // How many PTY chunks of terminal history are kept. One number drives three
+  // places, which is the whole point: persistence (session-store), replay on
+  // reconnect, and the in-memory buffer. They were three separate constants
+  // (100 / 200 / 1000), so raising the persist cap alone changed nothing a user
+  // could see — replay is what reaches the browser.
+  //
+  // The ceiling is not timidity. Measured against real sessions a chunk's median
+  // is 77-174 bytes, so 5000 chunks is roughly 0.3-0.9 MB of PTY bytes and a
+  // session file near 1-2 MB, rewritten by the 30s autosave. Higher starts
+  // costing the whole server, since that write is on the shared event loop.
+  static SCROLLBACK_MIN = 50;
+  static SCROLLBACK_MAX = 5000;
+
+  scrollbackFile() {
+    const base = process.env.CCW_DATA_DIR
+      ? path.resolve(process.env.CCW_DATA_DIR)
+      : path.join(require('os').homedir(), '.claude-code-web');
+    return path.join(base, 'scrollback.json');
+  }
+
+  // The persisted value, or the default if there is no file, it is corrupt, or
+  // it holds something that is not a usable number. A bad settings file must
+  // never stop the server from starting.
+  loadScrollbackChunks() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.scrollbackFile(), 'utf8'));
+      const n = parsed && parsed.chunks;
+      if (Number.isInteger(n)) return ClaudeCodeWebServer.clampScrollback(n);
+    } catch (_) { /* missing / unreadable / not JSON → default */ }
+    return SessionStore.DEFAULT_OUTPUT_CHUNKS;
+  }
+
+  static clampScrollback(n) {
+    return Math.min(ClaudeCodeWebServer.SCROLLBACK_MAX,
+                    Math.max(ClaudeCodeWebServer.SCROLLBACK_MIN, n));
+  }
+
+  // The in-memory cap. Never below the old 1000, and never below what we intend
+  // to persist — memory that drops a chunk before the autosave runs would make
+  // the setting a lie in the least visible way possible.
+  maxBufferSize() {
+    return Math.max(1000, this.sessionStore.maxOutputChunks);
+  }
+
+  // Apply a new depth everywhere it is already in play: the store, and every
+  // live session's own cap (sessions created later read maxBufferSize()).
+  setScrollbackChunks(chunks) {
+    const value = ClaudeCodeWebServer.clampScrollback(chunks);
+    this.sessionStore.maxOutputChunks = value;
+    const memory = this.maxBufferSize();
+    for (const session of this.claudeSessions.values()) session.maxBufferSize = memory;
+    return value;
+  }
+
+  // GET /api/settings/scrollback — current depth plus the bounds, so the UI can
+  // label its own input instead of hard-coding numbers that could drift.
+  getScrollback(req, res) {
+    res.json({
+      chunks: this.sessionStore.maxOutputChunks,
+      min: ClaudeCodeWebServer.SCROLLBACK_MIN,
+      max: ClaudeCodeWebServer.SCROLLBACK_MAX,
+      default: SessionStore.DEFAULT_OUTPUT_CHUNKS
+    });
+  }
+
+  // POST /api/settings/scrollback { chunks } — set the depth. Out of range is
+  // clamped rather than refused (the answer to "1000000" is the largest value we
+  // will actually honour, not an error), but a non-integer is a 400: it means the
+  // caller sent something we cannot interpret, and guessing would be worse.
+  setScrollback(req, res) {
+    const chunks = (req.body || {}).chunks;
+    if (!Number.isInteger(chunks)) {
+      return res.status(400).json({ error: 'chunks must be a whole number' });
+    }
+    const value = this.setScrollbackChunks(chunks);
+    try {
+      fs.mkdirSync(path.dirname(this.scrollbackFile()), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.scrollbackFile(), JSON.stringify({ chunks: value }, null, 2));
+    } catch (error) {
+      if (this.dev) console.error('Failed to persist scrollback setting:', error.message);
+      return res.status(500).json({ error: 'Could not save the setting', message: error.message });
+    }
+    res.json({ chunks: value });
   }
 
   // GET /api/plan-dirs?sessionId= — that session's own plan dirs, plus the global

@@ -1635,6 +1635,24 @@ class ClaudeCodeWebInterface {
             document.getElementById('smoothScrollValue').textContent = settings.smoothScrollDuration + 'ms';
         }
         this.loadPlanDirsUI();
+        this.loadScrollbackUI();
+    }
+
+    // Scrollback depth is a SERVER setting, unlike the visual ones above: it
+    // decides what is written to disk and replayed over the socket, so it cannot
+    // live in this browser's localStorage. Read it fresh each time the panel
+    // opens — another device may have changed it.
+    async loadScrollbackUI() {
+        const input = document.getElementById('scrollbackChunks');
+        if (!input) return;
+        try {
+            const res = await this.authFetch('/api/settings/scrollback');
+            if (!res.ok) return;
+            const data = await res.json();
+            input.value = data.chunks;
+            if (Number.isInteger(data.min)) input.min = data.min;
+            if (Number.isInteger(data.max)) input.max = data.max;
+        } catch (_) { /* leave the markup default; saving still works */ }
     }
 
     hideSettings() {
@@ -1800,9 +1818,40 @@ class ClaudeCodeWebInterface {
                 localStorage.setItem('cc-web-session-settings', JSON.stringify(map));
             }
             this.applySettings(settings);
+            this.saveScrollbackSetting();
             this.hideSettings();
         } catch (error) {
             console.error('Failed to save settings:', error);
+        }
+    }
+
+    // Fire-and-report: the panel closes either way. A server setting failing to
+    // save should say so, not hold the visual settings hostage — those already
+    // went to localStorage by the time this runs.
+    async saveScrollbackSetting() {
+        const input = document.getElementById('scrollbackChunks');
+        if (!input) return;
+        const chunks = parseInt(input.value, 10);
+        if (!Number.isInteger(chunks)) return;
+        try {
+            const res = await this.authFetch('/api/settings/scrollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chunks })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.showToast(data.error || 'Could not save the scrollback setting', true);
+                return;
+            }
+            // The server clamps to its own range, so report what it actually
+            // took rather than letting the panel claim a number it did not.
+            input.value = data.chunks;
+            if (data.chunks !== chunks) {
+                this.showToast(`Scrollback set to ${data.chunks} chunks (the allowed limit)`);
+            }
+        } catch (_) {
+            this.showToast('Could not save the scrollback setting', true);
         }
     }
 

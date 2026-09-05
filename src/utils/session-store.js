@@ -32,9 +32,13 @@ const os = require('os');
 // session now: with one file there was a single savedAt, so one active tab
 // kept every stale sibling alive.
 const MAX_AGE_DAYS = 7;
-// Same cap the single-file store applied. Kept identical: what survives a
-// restart is a separate question from where it is kept.
-const MAX_OUTPUT_CHUNKS = 100;
+// How many PTY chunks of scrollback survive a restart. 100 was the cap the
+// single-file store applied, and it was far too small to notice: a chunk is
+// whatever one read off the PTY returned, and measured against real sessions the
+// median is 77-174 bytes — so 100 chunks came to 8-24 KB, much of it Claude's
+// redraw escapes rather than text. 500 is the new default; the running value is
+// per-instance (`maxOutputChunks`) because it is user-configurable at runtime.
+const DEFAULT_OUTPUT_CHUNKS = 500;
 
 // Ids are interpolated into a path, so re-check the shape rather than trust
 // the caller — the same guard, and the same reasoning, as
@@ -53,6 +57,10 @@ class SessionStore {
         this.storageDir = process.env.CCW_DATA_DIR
             ? path.resolve(process.env.CCW_DATA_DIR)
             : path.join(os.homedir(), '.claude-code-web');
+        // Writable at runtime: the server sets it from the persisted setting on
+        // startup and again whenever it changes, so a save takes effect on the
+        // next autosave rather than on the next restart.
+        this.maxOutputChunks = DEFAULT_OUTPUT_CHUNKS;
         this.initializeStorage();
     }
 
@@ -99,7 +107,7 @@ class SessionStore {
             // starting fresh.
             claudeStarted: !!session.claudeStarted,
             outputBuffer: Array.isArray(session.outputBuffer)
-                ? session.outputBuffer.slice(-MAX_OUTPUT_CHUNKS)
+                ? session.outputBuffer.slice(-this.maxOutputChunks)
                 : [],
             lastAccessed: session.lastAccessed || Date.now(),
             savedAt: new Date().toISOString(),
@@ -228,7 +236,9 @@ class SessionStore {
                     active: false,
                     connections: new Set(),
                     outputBuffer: record.outputBuffer || [],
-                    maxBufferSize: 1000,
+                    // Memory must hold at least what we intend to persist,
+                    // or the cap below would silently defeat the setting.
+                    maxBufferSize: Math.max(1000, this.maxOutputChunks),
                     usageData: record.usageData || null,
                 });
             }
@@ -313,3 +323,4 @@ class SessionStore {
 
 module.exports = SessionStore;
 module.exports.isValidSessionId = isValidSessionId;
+module.exports.DEFAULT_OUTPUT_CHUNKS = DEFAULT_OUTPUT_CHUNKS;
